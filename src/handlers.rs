@@ -189,3 +189,31 @@ pub async fn invite_to_group(
         }
     }
 }
+
+/// Handler per trovare un utente dal suo username.
+/// GET /users/by_username/:username
+pub async fn get_user_by_username(
+    State(db_pool): State<PgPool>,
+    Path(username): Path<String>,
+) -> Result<Json<User>, (StatusCode, String)> {
+    sqlx::query_as!(User, "SELECT * FROM users WHERE username = $1", username)
+        .fetch_optional(&db_pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map(Json)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "User not found".to_string()))
+}
+
+/// Handler per trovare un gruppo dal suo nome.
+/// GET /groups/by_name/:name
+pub async fn get_group_by_name(
+    State(db_pool): State<PgPool>,
+    Path(name): Path<String>,
+) -> Result<Json<Group>, (StatusCode, String)> {
+    sqlx::query_as!(Group, "SELECT * FROM groups WHERE name = $1", name)
+        .fetch_optional(&db_pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map(Json)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Group not found".to_string()))
+}

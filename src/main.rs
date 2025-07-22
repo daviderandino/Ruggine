@@ -36,7 +36,9 @@ async fn main() {
         .route("/groups/:group_id/invite", post(handlers::invite_to_group))
         // Endpoint per WebSocket (logica da implementare)
         .route("/groups/:group_id/chat", get(|| async { "WebSocket endpoint placeholder" }))
-        .with_state(db_pool); // Condivide il pool di connessioni con gli handler
+        .route("/users/by_username/:username", get(handlers::get_user_by_username)) // NUOVA
+        .route("/groups/by_name/:name", get(handlers::get_group_by_name))       // NUOVA
+        .with_state(db_pool);
 
     // Avvia il server
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
