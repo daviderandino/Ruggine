@@ -2,64 +2,79 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use dashmap::DashMap;
+use sqlx::PgPool;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::broadcast;
 use tokio::time;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use uuid::Uuid;
 
 mod db;
 mod handlers;
 mod models;
 
+// Mappa per tenere traccia dei canali di broadcast per ogni gruppo
+pub type ChatState = Arc<DashMap<Uuid, broadcast::Sender<String>>>;
+
+// Struct unica per contenere tutto lo stato dell'applicazione
+#[derive(Clone)]
+pub struct AppState {
+    db_pool: PgPool,
+    chat_state: ChatState,
+}
+
 #[tokio::main]
 async fn main() {
-    // Carica le variabili d'ambiente dal file .env
     dotenvy::dotenv().expect("Failed to read .env file");
 
-    // Inizializza il sistema di logging
     initialize_logging();
     tracing::info!("Logging system initialized.");
 
-    // Avvia il task di logging per la CPU in background
     tokio::spawn(log_cpu_usage());
 
-    // Crea il pool di connessioni al database
+    // Inizializza gli stati
     let db_pool = db::create_db_pool()
         .await
         .expect("Failed to create database pool");
     tracing::info!("Database pool created successfully.");
+    
+    let chat_state = ChatState::new(DashMap::new());
 
-    // Definisci il router delle API
+    // Crea l'istanza dello stato applicativo
+    let app_state = AppState {
+        db_pool,
+        chat_state,
+    };
+
+    // Crea il router con un singolo stato
     let app = Router::new()
         .route("/users/register", post(handlers::register_user))
+        .route("/users/by_username/:username", get(handlers::get_user_by_username))
         .route("/groups", post(handlers::create_group))
+        .route("/groups/by_name/:name", get(handlers::get_group_by_name))
         .route("/groups/:group_id/invite", post(handlers::invite_to_group))
-        // Endpoint per WebSocket (logica da implementare)
-        .route("/groups/:group_id/chat", get(|| async { "WebSocket endpoint placeholder" }))
-        .route("/users/by_username/:username", get(handlers::get_user_by_username)) // NUOVA
-        .route("/groups/by_name/:name", get(handlers::get_group_by_name))       // NUOVA
-        .with_state(db_pool);
+        .route("/groups/:group_id/chat", get(handlers::chat_handler))
+        .with_state(app_state); // Passa lo stato unificato
 
-    // Avvia il server
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::info!("Server listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
-/// Inizializza il sistema di logging `tracing`.
-/// Logga sia sulla console che su un file.
 fn initialize_logging() {
     let file_appender = tracing_appender::rolling::daily("logs", "ruggine_server.log");
     let (non_blocking_writer, _guard) = tracing_appender::non_blocking(file_appender);
 
     tracing_subscriber::registry()
-        .with(fmt::Layer::new().with_writer(std::io::stdout)) // Log su console
-        .with(fmt::Layer::new().with_writer(non_blocking_writer)) // Log su file
+        .with(fmt::Layer::new().with_writer(std::io::stdout))
+        .with(fmt::Layer::new().with_writer(non_blocking_writer))
         .init();
 }
 
-/// Task asincrono che logga l'uso della CPU ogni 2 minuti.
 async fn log_cpu_usage() {
     let mut interval = time::interval(Duration::from_secs(120));
     loop {

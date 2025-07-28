@@ -1,56 +1,65 @@
+use crate::models::{
+    CreateGroupPayload, Group, InviteToGroupPayload, RegisterUserPayload, User, WsClientMessage,
+    WsServerMessage,
+};
+use crate::{AppState, ChatState}; // Importa AppState
 use axum::{
-    extract::{Path, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path, Query, State,
+    },
     http::StatusCode,
+    response::IntoResponse,
     Json,
 };
+use futures_util::{stream::StreamExt, SinkExt};
 use sqlx::PgPool;
+use std::collections::HashMap;
+use tokio::sync::broadcast;
 use uuid::Uuid;
-
-use crate::models::{InviteToGroupPayload, CreateGroupPayload, Group, RegisterUserPayload, User};
 
 // --- Gestione Utenti ---
 
-/// Handler per registrare un nuovo utente.
-/// POST /users/register
 pub async fn register_user(
-    State(db_pool): State<PgPool>,
+    State(app_state): State<AppState>, // Modificato
     Json(payload): Json<RegisterUserPayload>,
 ) -> Result<Json<User>, (StatusCode, String)> {
-    let new_user = sqlx::query_as!(
+    sqlx::query_as!(
         User,
         "INSERT INTO users (username) VALUES ($1) RETURNING *",
         payload.username
     )
-    .fetch_one(&db_pool)
+    .fetch_one(&app_state.db_pool) // Modificato
     .await
-    .map_err(|e| {
-        // Gestisce il caso di username duplicato
-        (StatusCode::CONFLICT, format!("Failed to create user: {}", e))
-    })?;
-
-    Ok(Json(new_user))
+    .map(Json)
+    .map_err(|e| (StatusCode::CONFLICT, format!("Failed to create user: {}", e)))
 }
 
+pub async fn get_user_by_username(
+    State(app_state): State<AppState>, // Modificato
+    Path(username): Path<String>,
+) -> Result<Json<User>, (StatusCode, String)> {
+    sqlx::query_as!(User, "SELECT * FROM users WHERE username = $1", username)
+        .fetch_optional(&app_state.db_pool) // Modificato
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map(Json)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "User not found".to_string()))
+}
 
 // --- Gestione Gruppi ---
 
-/// Handler per creare un nuovo gruppo.
-/// L'utente che lo crea ne diventa automaticamente membro.
-/// POST /groups
 pub async fn create_group(
-    State(db_pool): State<PgPool>,
+    State(app_state): State<AppState>, // Modificato
     Json(payload): Json<CreateGroupPayload>,
 ) -> Result<Json<Group>, (StatusCode, String)> {
-    // Usiamo una transazione per assicurare che entrambe le operazioni (creazione gruppo e aggiunta membro)
-    // vengano eseguite con successo o nessuna delle due.
-    let mut tx = db_pool.begin().await.map_err(|e| {
+    let mut tx = app_state.db_pool.begin().await.map_err(|e| { // Modificato
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to start transaction: {}", e),
         )
     })?;
 
-    // 1. Crea il gruppo
     let new_group = sqlx::query_as!(
         Group,
         "INSERT INTO groups (name) VALUES ($1) RETURNING *",
@@ -65,7 +74,6 @@ pub async fn create_group(
         )
     })?;
 
-    // 2. Aggiungi il creatore come membro del gruppo
     sqlx::query!(
         "INSERT INTO group_members (user_id, group_id) VALUES ($1, $2)",
         payload.creator_id,
@@ -80,7 +88,6 @@ pub async fn create_group(
         )
     })?;
 
-    // Finalizza la transazione
     tx.commit().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -91,15 +98,23 @@ pub async fn create_group(
     Ok(Json(new_group))
 }
 
-/// Handler per invitare un utente in un gruppo.
-/// POST /groups/{groupId}/invite
-/// POST /groups/{groupId}/invite
+pub async fn get_group_by_name(
+    State(app_state): State<AppState>, // Modificato
+    Path(name): Path<String>,
+) -> Result<Json<Group>, (StatusCode, String)> {
+    sqlx::query_as!(Group, "SELECT * FROM groups WHERE name = $1", name)
+        .fetch_optional(&app_state.db_pool) // Modificato
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map(Json)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Group not found".to_string()))
+}
+
 pub async fn invite_to_group(
-    State(db_pool): State<PgPool>,
+    State(app_state): State<AppState>, // Modificato
     Path(group_id): Path<Uuid>,
     Json(payload): Json<InviteToGroupPayload>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    // L'utente non può auto-invitarsi
     if payload.inviter_id == payload.user_to_invite_id {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -107,15 +122,14 @@ pub async fn invite_to_group(
         ));
     }
 
-    // Iniziamo una transazione per eseguire i controlli e l'inserimento in modo atomico
-    let mut tx = db_pool.begin().await.map_err(|e| {
+    let mut tx = app_state.db_pool.begin().await.map_err(|e| { // Modificato
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Database error: {}", e),
         )
     })?;
 
-    // 1. Controlla che chi invita sia effettivamente un membro del gruppo
+    // ... il resto della logica di invite_to_group non cambia...
     let is_inviter_a_member: (bool,) = sqlx::query_as(
         "SELECT EXISTS(SELECT 1 FROM group_members WHERE user_id = $1 AND group_id = $2)",
     )
@@ -132,7 +146,6 @@ pub async fn invite_to_group(
         ));
     }
 
-    // 2. Controlla che l'utente invitato non sia già un membro
     let is_already_member: (bool,) = sqlx::query_as(
         "SELECT EXISTS(SELECT 1 FROM group_members WHERE user_id = $1 AND group_id = $2)",
     )
@@ -149,8 +162,6 @@ pub async fn invite_to_group(
         ));
     }
 
-    // 3. Crea l'invito nel database.
-    // Se esiste già un invito (violazione del vincolo UNIQUE), la query fallirà.
     let result = sqlx::query!(
         r#"
         INSERT INTO group_invitations (group_id, inviter_id, invited_user_id)
@@ -165,18 +176,15 @@ pub async fn invite_to_group(
 
     match result {
         Ok(_) => {
-            // Se tutto va bene, conferma la transazione
             tx.commit().await.map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Failed to commit transaction: {}", e),
                 )
             })?;
-            // L'invito è stato creato con successo
             Ok(StatusCode::CREATED)
         }
         Err(e) => {
-            // Se c'è un errore (es. utente non trovato o invito duplicato)
             if let Some(db_err) = e.as_database_error() {
                 if db_err.is_unique_violation() {
                     return Err((StatusCode::CONFLICT, "An invitation for this user to this group already exists.".to_string()));
@@ -190,30 +198,88 @@ pub async fn invite_to_group(
     }
 }
 
-/// Handler per trovare un utente dal suo username.
-/// GET /users/by_username/:username
-pub async fn get_user_by_username(
-    State(db_pool): State<PgPool>,
-    Path(username): Path<String>,
-) -> Result<Json<User>, (StatusCode, String)> {
-    sqlx::query_as!(User, "SELECT * FROM users WHERE username = $1", username)
-        .fetch_optional(&db_pool)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map(Json)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "User not found".to_string()))
+// --- Gestione WebSocket ---
+
+pub async fn chat_handler(
+    ws: WebSocketUpgrade,
+    State(app_state): State<AppState>, // Modificato
+    Path(group_id): Path<Uuid>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let user_id_str = params.get("user_id").cloned().unwrap_or_default();
+    let user_id = Uuid::parse_str(&user_id_str).unwrap_or_default();
+    ws.on_upgrade(move |socket| {
+        handle_socket(
+            socket,
+            app_state.db_pool,
+            app_state.chat_state,
+            group_id,
+            user_id,
+        )
+    })
 }
 
-/// Handler per trovare un gruppo dal suo nome.
-/// GET /groups/by_name/:name
-pub async fn get_group_by_name(
-    State(db_pool): State<PgPool>,
-    Path(name): Path<String>,
-) -> Result<Json<Group>, (StatusCode, String)> {
-    sqlx::query_as!(Group, "SELECT * FROM groups WHERE name = $1", name)
-        .fetch_optional(&db_pool)
+async fn handle_socket(
+    socket: WebSocket,
+    db_pool: PgPool,
+    chat_state: ChatState,
+    group_id: Uuid,
+    user_id: Uuid,
+) {
+    // Usa or_insert_with per creare il canale se non esiste
+    let tx = chat_state
+        .entry(group_id)
+        .or_insert_with(|| broadcast::channel(100).0) // Corretto!
+        .clone();
+    
+    // ... il resto della funzione handle_socket rimane invariato ...
+    let mut rx = tx.subscribe();
+
+    let username = sqlx::query_scalar!("SELECT username FROM users WHERE id = $1", user_id)
+        .fetch_one(&db_pool)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map(Json)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Group not found".to_string()))
+        .unwrap_or_else(|_| "Sconosciuto".to_string());
+
+    let (mut sender, mut receiver) = socket.split();
+
+    let recv_username = username.clone();
+    let mut recv_task = tokio::spawn(async move {
+        while let Some(Ok(Message::Text(text))) = receiver.next().await {
+            let msg: WsClientMessage = match serde_json::from_str(&text) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+
+            let server_msg = WsServerMessage {
+                sender_id: user_id,
+                sender_username: recv_username.clone(),
+                content: msg.content,
+            };
+
+            if tx.send(serde_json::to_string(&server_msg).unwrap()).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut send_task = tokio::spawn(async move {
+        while let Ok(msg) = rx.recv().await {
+            if sender.send(Message::Text(msg)).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = (&mut recv_task) => send_task.abort(),
+        _ = (&mut send_task) => recv_task.abort(),
+    };
+
+    if chat_state.get(&group_id).map(|entry| entry.receiver_count()) == Some(0) {
+        tracing::info!(
+            "Nessun utente rimasto nel gruppo {}, pulizia canale.",
+            group_id
+        );
+        chat_state.remove(&group_id);
+    }
 }

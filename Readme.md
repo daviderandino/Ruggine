@@ -1,5 +1,70 @@
 password PostgreSQL: ciao
 
+DATABASES TABLES
+
+users
+
+Contiene le informazioni di base per ogni utente registrato.
+
+id: (UUID) L'identificativo unico dell'utente.
+
+username: (TEXT) Il nome utente, che deve essere unico.
+
+created_at: (TIMESTAMPTZ) La data e l'ora di registrazione.
+
+
+groups
+Memorizza i gruppi di chat creati.
+
+id: (UUID) L'identificativo unico del gruppo.
+
+name: (TEXT) Il nome del gruppo.
+
+created_at: (TIMESTAMPTZ) La data e l'ora di creazione.
+
+
+group_members
+Tabella di collegamento che associa gli utenti ai gruppi di cui fanno parte.
+
+user_id: (UUID) Chiave esterna che fa riferimento a users.id.
+
+group_id: (UUID) Chiave esterna che fa riferimento a groups.id.
+
+
+
+group_invitations
+Traccia gli inviti in sospeso per entrare nei gruppi.
+
+id: (UUID) L'identificativo unico dell'invito.
+
+group_id: (UUID) Il gruppo a cui l'utente è stato invitato.
+
+inviter_id: (UUID) L'utente che ha inviato l'invito.
+
+invited_user_id: (UUID) L'utente che ha ricevuto l'invito.
+
+status: (VARCHAR) Lo stato dell'invito (es. 'pending', 'accepted').
+
+
+
+messages
+Archivia tutti i messaggi inviati all'interno dei gruppi.
+
+id: (UUID) L'identificativo unico del messaggio.
+
+group_id: (UUID) Il gruppo in cui è stato inviato il messaggio.
+
+sender_id: (UUID) L'utente che ha inviato il messaggio.
+
+content: (TEXT) Il contenuto testuale del messaggio.
+
+created_at: (TIMESTAMPTZ) La data e l'ora di invio.
+
+
+
+_sqlx_migrations
+Tabella interna gestita da SQLx per tenere traccia delle migrazioni del database applicate.
+
 
 API REGISTRAZIONE
 

@@ -1,25 +1,25 @@
-use futures_util::{StreamExt, SinkExt};
+use futures_util::{stream::StreamExt, SinkExt};
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::sync::Arc;
+use tokio::io::AsyncBufReadExt;
 use tokio::sync::Mutex;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use uuid::Uuid;
-use tokio::io::AsyncBufReadExt;
 
 const API_BASE_URL: &str = "http://127.0.0.1:3000";
 
 // --- Strutture Dati per le risposte API ---
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 struct User {
     id: Uuid,
     username: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 struct Group {
     id: Uuid,
     name: String,
@@ -28,17 +28,14 @@ struct Group {
 // --- Strutture Dati per i messaggi WebSocket ---
 
 #[derive(Serialize)]
-struct ClientChatMessage {
-    r#type: String,
-    sender_id: Uuid,
+struct WsClientMessage {
     content: String,
 }
 
 #[derive(Deserialize, Debug)]
-struct ServerChatMessage {
+struct WsServerMessage {
     sender_username: String,
     content: String,
-    group_name: String,
 }
 
 // --- Stato condiviso del Client ---
@@ -75,7 +72,8 @@ async fn main() {
         buffer.clear();
 
         if let Ok(bytes) = line_reader.read_line(&mut buffer).await {
-            if bytes == 0 { // EOF (Ctrl+D)
+            if bytes == 0 {
+                // EOF (Ctrl+D)
                 break;
             }
 
@@ -140,14 +138,16 @@ async fn handle_command(input: &str, state: SharedState, http_client: HttpClient
 
 async fn register_user(username: &str, state: SharedState, client: HttpClient) {
     let payload = serde_json::json!({ "username": username });
-    let res = client.post(format!("{}/users/register", API_BASE_URL))
+    let res = client
+        .post(format!("{}/users/register", API_BASE_URL))
         .json(&payload)
-        .send().await;
+        .send()
+        .await;
 
     match res {
         Ok(response) if response.status().is_success() => {
             let user = response.json::<User>().await.unwrap();
-            println!("Registrazione riuscita! ID: {}", user.id);
+            println!("Registrazione riuscita! Benvenuto {}", user.username);
             let mut s = state.lock().await;
             s.user = Some(user);
         }
@@ -167,12 +167,14 @@ async fn create_group(group_name: &str, state: SharedState, client: HttpClient) 
             return;
         }
     };
-    
+
     let payload = serde_json::json!({ "name": group_name, "creator_id": user_id });
-    let res = client.post(format!("{}/groups", API_BASE_URL))
+    let res = client
+        .post(format!("{}/groups", API_BASE_URL))
         .json(&payload)
-        .send().await;
-    
+        .send()
+        .await;
+
     match res {
         Ok(response) if response.status().is_success() => {
             let group = response.json::<Group>().await.unwrap();
@@ -186,19 +188,24 @@ async fn create_group(group_name: &str, state: SharedState, client: HttpClient) 
     }
 }
 
-async fn invite_user(group_name: &str, username_to_invite: &str, state: SharedState, client: HttpClient) {
+async fn invite_user(
+    group_name: &str,
+    username_to_invite: &str,
+    state: SharedState,
+    client: HttpClient,
+) {
     let (inviter_id, group_id) = {
         let s = state.lock().await;
-        let inviter_id = match &s.user {
-            Some(u) => u.id,
-            None => {
-                println!("Devi prima registrarti!");
-                return;
-            }
+        let inviter_id = if let Some(u) = &s.user {
+            u.id
+        } else {
+            println!("Devi prima registrarti!");
+            return;
         };
-        // Per semplicità, cerchiamo il gruppo per nome
-        // In un'app reale, l'utente potrebbe essere in più gruppi
-        let group_res = client.get(format!("{}/groups/by_name/{}", API_BASE_URL, group_name)).send().await;
+        let group_res = client
+            .get(format!("{}/groups/by_name/{}", API_BASE_URL, group_name))
+            .send()
+            .await;
         let group = match group_res {
             Ok(res) if res.status().is_success() => res.json::<Group>().await.unwrap(),
             _ => {
@@ -209,11 +216,20 @@ async fn invite_user(group_name: &str, username_to_invite: &str, state: SharedSt
         (inviter_id, group.id)
     };
 
-    let user_to_invite_res = client.get(format!("{}/users/by_username/{}", API_BASE_URL, username_to_invite)).send().await;
+    let user_to_invite_res = client
+        .get(format!(
+            "{}/users/by_username/{}",
+            API_BASE_URL, username_to_invite
+        ))
+        .send()
+        .await;
     let user_to_invite = match user_to_invite_res {
         Ok(res) if res.status().is_success() => res.json::<User>().await.unwrap(),
         _ => {
-            println!("Utente '{}' da invitare non trovato.", username_to_invite);
+            println!(
+                "Utente '{}' da invitare non trovato.",
+                username_to_invite
+            );
             return;
         }
     };
@@ -223,13 +239,18 @@ async fn invite_user(group_name: &str, username_to_invite: &str, state: SharedSt
         "user_to_invite_id": user_to_invite.id
     });
 
-    let res = client.post(format!("{}/groups/{}/invite", API_BASE_URL, group_id))
+    let res = client
+        .post(format!("{}/groups/{}/invite", API_BASE_URL, group_id))
         .json(&payload)
-        .send().await;
+        .send()
+        .await;
 
     match res {
         Ok(response) if response.status().is_success() => {
-            println!("Invito inviato a '{}' per il gruppo '{}'.", username_to_invite, group_name);
+            println!(
+                "Invito inviato a '{}' per il gruppo '{}'.",
+                username_to_invite, group_name
+            );
         }
         Ok(response) => {
             let error_text = response.text().await.unwrap_or_default();
@@ -240,20 +261,30 @@ async fn invite_user(group_name: &str, username_to_invite: &str, state: SharedSt
 }
 
 async fn join_group(group_name: &str, state: SharedState, client: HttpClient) {
-    // Prima, implementeremo un endpoint /join lato server.
-    // Per ora, questo comando si connetterà direttamente alla WebSocket.
-    
-    // 1. Trova l'ID del gruppo
-    let group = match client.get(format!("{}/groups/by_name/{}", API_BASE_URL, group_name)).send().await {
+    let user_id = if let Some(u) = &state.lock().await.user {
+        u.id
+    } else {
+        println!("Devi prima registrarti!");
+        return;
+    };
+
+    let group = match client
+        .get(format!("{}/groups/by_name/{}", API_BASE_URL, group_name))
+        .send()
+        .await
+    {
         Ok(res) if res.status().is_success() => res.json::<Group>().await.unwrap(),
         _ => {
             println!("Gruppo '{}' non trovato.", group_name);
             return;
         }
     };
-    
-    // 2. Connettiti alla WebSocket
-    let ws_url = format!("ws://127.0.0.1:3000/groups/{}/chat", group.id);
+
+    let ws_url = format!(
+        "ws://127.0.0.1:3000/groups/{}/chat?user_id={}",
+        group.id, user_id
+    );
+
     let (ws_stream, _) = match connect_async(&ws_url).await {
         Ok(s) => s,
         Err(e) => {
@@ -262,20 +293,20 @@ async fn join_group(group_name: &str, state: SharedState, client: HttpClient) {
         }
     };
 
-    println!("Connesso alla chat del gruppo '{}'! Ora puoi inviare messaggi con /msg.", group.name);
+    println!(
+        "Connesso alla chat del gruppo '{}'! Ora puoi inviare messaggi con /msg.",
+        group.name
+    );
 
     let (mut write, mut read) = ws_stream.split();
-
-    // Canale per inviare messaggi dalla console alla WebSocket
     let (tx, mut rx) = tokio::sync::mpsc::channel::<WsMessage>(32);
-    
+
     {
         let mut s = state.lock().await;
         s.group = Some(group);
         s.ws_sender = Some(tx);
     }
 
-    // Task per inviare messaggi
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             if write.send(msg).await.is_err() {
@@ -284,13 +315,14 @@ async fn join_group(group_name: &str, state: SharedState, client: HttpClient) {
         }
     });
 
-    // Task per ricevere messaggi
     tokio::spawn(async move {
         while let Some(Ok(msg)) = read.next().await {
             if let WsMessage::Text(text) = msg {
-                // In un client reale, qui si deserializzerebbe un JSON strutturato.
-                // Per ora stampiamo il testo grezzo.
-                println!("\n< {}", text);
+                let server_msg: WsServerMessage = serde_json::from_str(&text).unwrap();
+                println!(
+                    "\n< {}: {}",
+                    server_msg.sender_username, server_msg.content
+                );
                 print!("> ");
                 io::stdout().flush().unwrap();
             }
@@ -301,19 +333,14 @@ async fn join_group(group_name: &str, state: SharedState, client: HttpClient) {
 
 async fn send_message(content: &str, state: SharedState) {
     let s = state.lock().await;
-    
-    let sender_id = match &s.user {
-        Some(u) => u.id,
-        None => {
-            println!("Non sei registrato.");
-            return;
-        }
-    };
+
+    if s.user.is_none() {
+        println!("Non sei registrato.");
+        return;
+    }
 
     if let Some(sender) = &s.ws_sender {
-        let msg = ClientChatMessage {
-            r#type: "message".to_string(),
-            sender_id,
+        let msg = WsClientMessage {
             content: content.to_string(),
         };
         let json_msg = serde_json::to_string(&msg).unwrap();
