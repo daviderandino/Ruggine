@@ -2,7 +2,7 @@ use crate::models::{
     CreateGroupPayload, Group, InviteToGroupPayload, RegisterUserPayload, User, WsClientMessage,
     WsServerMessage,
 };
-use crate::{AppState, ChatState}; // Importa AppState
+use crate::{AppState, ChatState};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -20,40 +20,46 @@ use uuid::Uuid;
 
 // --- Gestione Utenti ---
 
+// Riportata alla versione originale (solo username) ma con AppState corretto
 pub async fn register_user(
-    State(app_state): State<AppState>, // Modificato
+    State(app_state): State<AppState>,
     Json(payload): Json<RegisterUserPayload>,
 ) -> Result<Json<User>, (StatusCode, String)> {
     sqlx::query_as!(
         User,
-        "INSERT INTO users (username) VALUES ($1) RETURNING *",
+        "INSERT INTO users (username) VALUES ($1) RETURNING id, username, created_at",
         payload.username
     )
-    .fetch_one(&app_state.db_pool) // Modificato
+    .fetch_one(&app_state.db_pool)
     .await
     .map(Json)
-    .map_err(|e| (StatusCode::CONFLICT, format!("Failed to create user: {}", e)))
+    .map_err(|e| (StatusCode::CONFLICT, format!("Username already exists: {}", e)))
 }
 
 pub async fn get_user_by_username(
-    State(app_state): State<AppState>, // Modificato
+    State(app_state): State<AppState>,
     Path(username): Path<String>,
 ) -> Result<Json<User>, (StatusCode, String)> {
-    sqlx::query_as!(User, "SELECT * FROM users WHERE username = $1", username)
-        .fetch_optional(&app_state.db_pool) // Modificato
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map(Json)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "User not found".to_string()))
+    // Modifichiamo la query per selezionare solo le colonne necessarie
+    sqlx::query_as!(
+        User,
+        "SELECT id, username, created_at FROM users WHERE username = $1",
+        username
+    )
+    .fetch_optional(&app_state.db_pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .ok_or_else(|| (StatusCode::NOT_FOUND, "User not found".to_string()))
 }
 
 // --- Gestione Gruppi ---
 
 pub async fn create_group(
-    State(app_state): State<AppState>, // Modificato
+    State(app_state): State<AppState>,
     Json(payload): Json<CreateGroupPayload>,
 ) -> Result<Json<Group>, (StatusCode, String)> {
-    let mut tx = app_state.db_pool.begin().await.map_err(|e| { // Modificato
+    let mut tx = app_state.db_pool.begin().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to start transaction: {}", e),
@@ -99,11 +105,11 @@ pub async fn create_group(
 }
 
 pub async fn get_group_by_name(
-    State(app_state): State<AppState>, // Modificato
+    State(app_state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<Group>, (StatusCode, String)> {
     sqlx::query_as!(Group, "SELECT * FROM groups WHERE name = $1", name)
-        .fetch_optional(&app_state.db_pool) // Modificato
+        .fetch_optional(&app_state.db_pool)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map(Json)
@@ -111,7 +117,7 @@ pub async fn get_group_by_name(
 }
 
 pub async fn invite_to_group(
-    State(app_state): State<AppState>, // Modificato
+    State(app_state): State<AppState>,
     Path(group_id): Path<Uuid>,
     Json(payload): Json<InviteToGroupPayload>,
 ) -> Result<StatusCode, (StatusCode, String)> {
@@ -122,14 +128,13 @@ pub async fn invite_to_group(
         ));
     }
 
-    let mut tx = app_state.db_pool.begin().await.map_err(|e| { // Modificato
+    let mut tx = app_state.db_pool.begin().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Database error: {}", e),
         )
     })?;
 
-    // ... il resto della logica di invite_to_group non cambia...
     let is_inviter_a_member: (bool,) = sqlx::query_as(
         "SELECT EXISTS(SELECT 1 FROM group_members WHERE user_id = $1 AND group_id = $2)",
     )
@@ -202,7 +207,7 @@ pub async fn invite_to_group(
 
 pub async fn chat_handler(
     ws: WebSocketUpgrade,
-    State(app_state): State<AppState>, // Modificato
+    State(app_state): State<AppState>,
     Path(group_id): Path<Uuid>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
@@ -226,13 +231,11 @@ async fn handle_socket(
     group_id: Uuid,
     user_id: Uuid,
 ) {
-    // Usa or_insert_with per creare il canale se non esiste
     let tx = chat_state
         .entry(group_id)
-        .or_insert_with(|| broadcast::channel(100).0) // Corretto!
+        .or_insert_with(|| broadcast::channel(100).0)
         .clone();
     
-    // ... il resto della funzione handle_socket rimane invariato ...
     let mut rx = tx.subscribe();
 
     let username = sqlx::query_scalar!("SELECT username FROM users WHERE id = $1", user_id)
