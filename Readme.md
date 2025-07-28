@@ -116,3 +116,12 @@ BODY RICHIESTA
 }
 
 RISPOSTA: 201 Created
+
+API per /msg
+No, per questo non serve una nuova API HTTP. La logica per inviare e ricevere messaggi è già gestita, ma non tramite una classica API REST.
+
+Viene gestita attraverso la connessione WebSocket che il client stabilisce quando si unisce a un gruppo (/join). L'endpoint per stabilire questa connessione esiste già:
+
+GET /groups/{group_id}/chat (che poi fa l'upgrade a WebSocket)
+
+Una volta che il client è connesso, il comando /msg non fa una nuova chiamata HTTP, ma invia un messaggio JSON attraverso il canale WebSocket già aperto. Il backend lo riceve nella funzione handle_socket e lo inoltra agli altri membri del gruppo.
