@@ -1,0 +1,10 @@
+C:\Users\David\Desktop\Ruggine\ruggine_client\target\debug\deps\libglutin_egl_sys-0e63c6bd250a5131.rmeta: C:\Users\David\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin_egl_sys-0.6.0\src\lib.rs C:\Users\David\Desktop\Ruggine\ruggine_client\target\debug\build\glutin_egl_sys-2a4757d8d8f36c59\out/egl_bindings.rs
+
+C:\Users\David\Desktop\Ruggine\ruggine_client\target\debug\deps\libglutin_egl_sys-0e63c6bd250a5131.rlib: C:\Users\David\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin_egl_sys-0.6.0\src\lib.rs C:\Users\David\Desktop\Ruggine\ruggine_client\target\debug\build\glutin_egl_sys-2a4757d8d8f36c59\out/egl_bindings.rs
+
+C:\Users\David\Desktop\Ruggine\ruggine_client\target\debug\deps\glutin_egl_sys-0e63c6bd250a5131.d: C:\Users\David\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin_egl_sys-0.6.0\src\lib.rs C:\Users\David\Desktop\Ruggine\ruggine_client\target\debug\build\glutin_egl_sys-2a4757d8d8f36c59\out/egl_bindings.rs
+
+C:\Users\David\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin_egl_sys-0.6.0\src\lib.rs:
+C:\Users\David\Desktop\Ruggine\ruggine_client\target\debug\build\glutin_egl_sys-2a4757d8d8f36c59\out/egl_bindings.rs:
+
+# env-dep:OUT_DIR=C:\\Users\\David\\Desktop\\Ruggine\\ruggine_client\\target\\debug\\build\\glutin_egl_sys-2a4757d8d8f36c59\\out
