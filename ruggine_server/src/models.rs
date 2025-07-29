@@ -5,11 +5,10 @@ use uuid::Uuid;
 
 // --- Modelli per API REST ---
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow, Clone)]
 pub struct User {
     pub id: Uuid,
     pub username: String,
-    // La password non viene mai serializzata e inviata al client
     #[serde(skip_serializing)]
     pub password_hash: String,
     #[serde(with = "time::serde::rfc3339")]
@@ -19,32 +18,30 @@ pub struct User {
 #[derive(Deserialize)]
 pub struct RegisterUserPayload {
     pub username: String,
-    pub password: String, // Aggiunto campo password
+    pub password: String,
 }
 
-// Nuovo payload per il login
 #[derive(Deserialize)]
 pub struct LoginPayload {
     pub username: String,
     pub password: String,
 }
 
-// Nuova risposta per il login, che contiene il token
 #[derive(Serialize)]
 pub struct LoginResponse {
     pub token: String,
+    pub user: User, // Ottimizzazione: restituisce l'utente al login
 }
 
-// Claims JWT
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: Uuid,   // Subject (user_id)
-    pub exp: i64,    // Expiration time
-    pub iat: i64,    // Issued at
+    pub sub: Uuid,
+    pub exp: i64,
+    pub iat: i64,
     pub username: String,
 }
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow, Clone)]
 pub struct Group {
     pub id: Uuid,
     pub name: String,
@@ -55,13 +52,31 @@ pub struct Group {
 #[derive(Deserialize)]
 pub struct CreateGroupPayload {
     pub name: String,
-    pub creator_id: Uuid,
+    // Rimosso creator_id, verrà dal token JWT
 }
 
 #[derive(Deserialize)]
 pub struct InviteToGroupPayload {
-    pub inviter_id: Uuid,
+    // Rimosso inviter_id, verrà dal token JWT
     pub user_to_invite_id: Uuid,
+}
+
+// --- NUOVI Modelli per Inviti ---
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct Invitation {
+    pub id: Uuid,
+    pub group_id: Uuid,
+    pub group_name: String,
+    pub inviter_username: String,
+}
+
+#[derive(sqlx::Type, Debug, PartialEq)]
+#[sqlx(type_name = "invitation_status", rename_all = "lowercase")]
+pub enum InvitationStatus {
+    Pending,
+    Accepted,
+    Declined,
 }
 
 // --- Modelli per WebSocket ---

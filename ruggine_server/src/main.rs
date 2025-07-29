@@ -13,18 +13,19 @@ use tokio::time;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 
+// La dichiarazione del modulo ora è pubblica
+pub mod auth;
 mod db;
 mod handlers;
 mod models;
 
 pub type ChatState = Arc<DashMap<Uuid, broadcast::Sender<String>>>;
 
-// Struct unica per contenere tutto lo stato dell'applicazione
 #[derive(Clone)]
 pub struct AppState {
     db_pool: PgPool,
     chat_state: ChatState,
-    jwt_secret: String, // Aggiunto segreto per JWT
+    jwt_secret: String,
 }
 
 #[tokio::main]
@@ -35,35 +36,45 @@ async fn main() {
     tracing::info!("Logging system initialized.");
 
     tokio::spawn(log_cpu_usage());
-    
-    // Leggi il segreto JWT dalle variabili d'ambiente
+
     let jwt_secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
 
-    // Inizializza gli stati
     let db_pool = db::create_db_pool()
         .await
         .expect("Failed to create database pool");
     tracing::info!("Database pool created successfully.");
-    
+
     let chat_state = ChatState::new(DashMap::new());
 
-    // Crea l'istanza dello stato applicativo
     let app_state = AppState {
         db_pool,
         chat_state,
         jwt_secret,
     };
 
-    // Crea il router con un singolo stato
+    // Ora che il modulo `auth` è pubblico, Axum può trovare l'implementazione
+    // dell'estrattore per `Claims` e questi handler funzioneranno.
     let app = Router::new()
         .route("/users/register", post(handlers::register_user))
-        .route("/users/login", post(handlers::login_user)) // Nuova rotta per il login
-        .route("/users/by_username/:username", get(handlers::get_user_by_username))
+        .route("/users/login", post(handlers::login_user))
+        .route(
+            "/users/by_username/:username",
+            get(handlers::get_user_by_username),
+        )
         .route("/groups", post(handlers::create_group))
         .route("/groups/by_name/:name", get(handlers::get_group_by_name))
         .route("/groups/:group_id/invite", post(handlers::invite_to_group))
         .route("/groups/:group_id/chat", get(handlers::chat_handler))
-        .with_state(app_state); // Passa lo stato unificato
+        .route("/invitations", get(handlers::get_pending_invitations))
+        .route(
+            "/invitations/:invitation_id/accept",
+            post(handlers::accept_invitation),
+        )
+        .route(
+            "/invitations/:invitation_id/decline",
+            post(handlers::decline_invitation),
+        )
+        .with_state(app_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::info!("Server listening on {}", addr);
