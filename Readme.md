@@ -1,127 +1,272 @@
-password PostgreSQL: ciao
 
-DATABASES TABLES
+# Ruggine - Documentazione API & DB
+Questa è la documentazione del server di Ruggine.
 
-users
+## Autenticazione
 
-Contiene le informazioni di base per ogni utente registrato.
+La maggior parte delle API richiede un token JWT per l'autenticazione. Il token deve essere inviato nell'header Authorization con lo schema Bearer.
 
-id: (UUID) L'identificativo unico dell'utente.
+Authorization: Bearer <your_jwt_token>
 
-username: (TEXT) Il nome utente, che deve essere unico.
+## API Utenti
+### 1. Registrazione Utente
 
-created_at: (TIMESTAMPTZ) La data e l'ora di registrazione.
+Crea un nuovo utente nel sistema.
 
+- Endpoint: POST http://127.0.0.1:3000/users/register
 
-groups
-Memorizza i gruppi di chat creati.
+- Descrizione: Registra un nuovo utente con username e password. La password deve essere lunga almeno 8 caratteri.
 
-id: (UUID) L'identificativo unico del gruppo.
+Corpo della Richiesta:
 
-name: (TEXT) Il nome del gruppo.
-
-created_at: (TIMESTAMPTZ) La data e l'ora di creazione.
-
-
-group_members
-Tabella di collegamento che associa gli utenti ai gruppi di cui fanno parte.
-
-user_id: (UUID) Chiave esterna che fa riferimento a users.id.
-
-group_id: (UUID) Chiave esterna che fa riferimento a groups.id.
-
-
-
-group_invitations
-Traccia gli inviti in sospeso per entrare nei gruppi.
-
-id: (UUID) L'identificativo unico dell'invito.
-
-group_id: (UUID) Il gruppo a cui l'utente è stato invitato.
-
-inviter_id: (UUID) L'utente che ha inviato l'invito.
-
-invited_user_id: (UUID) L'utente che ha ricevuto l'invito.
-
-status: (VARCHAR) Lo stato dell'invito (es. 'pending', 'accepted').
-
-
-
-messages
-Archivia tutti i messaggi inviati all'interno dei gruppi.
-
-id: (UUID) L'identificativo unico del messaggio.
-
-group_id: (UUID) Il gruppo in cui è stato inviato il messaggio.
-
-sender_id: (UUID) L'utente che ha inviato il messaggio.
-
-content: (TEXT) Il contenuto testuale del messaggio.
-
-created_at: (TIMESTAMPTZ) La data e l'ora di invio.
-
-
-
-_sqlx_migrations
-Tabella interna gestita da SQLx per tenere traccia delle migrazioni del database applicate.
-
-
-API REGISTRAZIONE
-
-http://127.0.0.1:3000/users/register
-
-
-BODY RICHIESTA POST
-
- {
-    "username": "primo_utente"
+<pre>
+{
+    "username": "mio_utente",
+    "password": "password_sicura_123"
 }
+</pre>
 
-BODY RISPOSTA
+Risposta di Successo (Codice 200 OK):
 
+<pre>
 {
     "id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
-    "username": "primo_utente",
-    "created_at": "2025-07-22T21:10:00.123Z"
+    "username": "mio_utente",
+    "created_at": "2025-07-29T20:30:00.123Z"
 }
+</pre>
 
-API CREARE GRUPPO
+Risposte di Errore:
 
-http://127.0.0.1:3000/groups
+- 400 Bad Request: La password è troppo corta.
 
-BODY RICHIESTA 
+- 409 Conflict: L'username esiste già.
 
+### 2. Login Utente
+Autentica un utente e restituisce un token JWT.
+
+- Endpoint: POST http://127.0.0.1:3000/users/login
+
+- Descrizione: Effettua il login fornendo username e password per ottenere un token di sessione.
+
+Corpo della Richiesta (application/json):
+
+<pre>
 {
-    "name": "Gruppo di Prova",
-    "creator_id": "ID_DEL_PRIMO_UTENTE_COPIATO_PRIMA" 
+    "username": "mio_utente",
+    "password": "password_sicura_123"
 }
+</pre>
 
-BODY RISPOSTA
+Risposta di Successo (Codice 200 OK):
 
+<pre>
+{
+    "token": "ey...un_lungo_token_jwt...A"
+}
+</pre>
+
+Risposte di Errore:
+
+- 401 Unauthorized: Username o password non validi.
+
+### 3. Ottenere Utente per Username
+Recupera le informazioni di un utente specifico.
+
+- Endpoint: GET http://127.0.0.1:3000/users/by_username/<username>
+
+- Descrizione: Cerca e restituisce i dati di un utente dato il suo username.
+
+Parametri URL:
+
+- username: Il nome dell'utente da cercare.
+
+Risposta di Successo (Codice 200 OK):
+
+<pre>
+{
+    "id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+    "username": "mio_utente",
+    "created_at": "2025-07-29T20:30:00.123Z"
+}
+</pre>
+Risposte di Errore:
+
+- 404 Not Found: Utente non trovato.
+
+## API Gruppi
+### 1. Creare un Gruppo
+Crea un nuovo gruppo di chat.
+
+- Endpoint: POST http://127.0.0.1:3000/groups
+
+- Descrizione: Crea un nuovo gruppo e aggiunge l'utente creatore come primo membro.
+
+Corpo della Richiesta (application/json):
+
+<pre>
+{
+    "name": "Il Mio Gruppo Fantastico",
+    "creator_id": "a1b2c3d4-e5f6-7890-1234-567890abcdef"
+}
+</pre>
+Risposta di Successo (Codice 200 OK):
+
+<pre>
 {
     "id": "f9e8d7c6-b5a4-3210-fedc-ba9876543210",
-    "name": "Gruppo di Prova",
-    "created_at": "2025-07-22T21:12:00.456Z"
+    "name": "Il Mio Gruppo Fantastico",
+    "created_at": "2025-07-29T20:35:00.456Z"
 }
+</pre>
 
-API INVITARE ALTRO UTENTE
+### 2. Ottenere Gruppo per Nome
+Recupera le informazioni di un gruppo specifico.
 
-http://127.0.0.1:3000/groups/ID_DEL_GRUPPO/invite 
+- Endpoint: GET http://127.0.0.1:3000/groups/by_name/<name>
 
-BODY RICHIESTA
+- Descrizione: Cerca e restituisce i dati di un gruppo dato il suo nome.
 
+Parametri URL:
+
+- name: Il nome del gruppo da cercare.
+
+Risposta di Successo (Codice 200 OK):
+
+<pre>
 {
-    "inviter_id": "ID_DEL_PRIMO_UTENTE",
-    "user_to_invite_id": "ID_DEL_SECONDO_UTENTE"
+    "id": "f9e8d7c6-b5a4-3210-fedc-ba9876543210",
+    "name": "Il Mio Gruppo Fantastico",
+    "created_at": "2025-07-29T20:35:00.456Z"
 }
+</pre>
+Risposte di Errore:
 
-RISPOSTA: 201 Created
+- 404 Not Found: Gruppo non trovato.
 
-API per /msg
-No, per questo non serve una nuova API HTTP. La logica per inviare e ricevere messaggi è già gestita, ma non tramite una classica API REST.
+### 3. Invitare un Utente in un Gruppo
+Invia un invito a un utente per unirsi a un gruppo.
 
-Viene gestita attraverso la connessione WebSocket che il client stabilisce quando si unisce a un gruppo (/join). L'endpoint per stabilire questa connessione esiste già:
+- Endpoint: POST http://127.0.0.1:3000/groups/<group_id>/invite
 
-GET /groups/{group_id}/chat (che poi fa l'upgrade a WebSocket)
+- Descrizione: Permette a un membro di un gruppo di invitare un altro utente.
 
-Una volta che il client è connesso, il comando /msg non fa una nuova chiamata HTTP, ma invia un messaggio JSON attraverso il canale WebSocket già aperto. Il backend lo riceve nella funzione handle_socket e lo inoltra agli altri membri del gruppo.
+Parametri URL:
+
+- group_id: L'ID del gruppo in cui invitare.
+
+Corpo della Richiesta (application/json):
+
+<pre>
+{
+    "inviter_id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+    "user_to_invite_id": "b2c3d4e5-f6a7-8901-2345-67890abcdef1"
+}
+</pre>
+
+Risposta di Successo: Codice 201 Created.
+
+Risposte di Errore:
+
+- 403 Forbidden: L'utente che invita non è membro del gruppo.
+
+- 404 Not Found: L'utente o il gruppo specificato non esiste.
+
+- 409 Conflict: L'utente è già membro o un invito è già stato inviato.
+
+## WebSocket Chat
+### 1. Connessione alla Chat
+Stabilisce una connessione WebSocket per ricevere e inviare messaggi in tempo reale.
+
+- Endpoint: GET /groups/:group_id/chat
+
+- Descrizione: Esegue l'upgrade della connessione da HTTP a WebSocket.
+
+Parametri Query String:
+
+- group_id: L'ID del gruppo a cui connettersi.
+
+- user_id: L'ID dell'utente che si sta connettendo.
+
+- token: Il token JWT per l'autenticazione.
+
+Esempio URL:
+ws://127.0.0.1:3000/groups/f9e8d7c6-b5a4-3210-fedc-ba9876543210/chat?user_id=a1b2c3d4-e5f6-7890-1234-567890abcdef&token=ey...
+
+### 2. Messaggi WebSocket
+Messaggio dal Client al Server:
+Il client invia un oggetto JSON con il contenuto del messaggio.
+
+<pre>
+{
+    "content": "Ciao a tutti!"
+}
+</pre>
+
+Messaggio dal Server al Client:
+Il server inoltra i messaggi a tutti i client connessi, aggiungendo le informazioni sul mittente.
+
+<pre>
+{
+    "sender_id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+    "sender_username": "mio_utente",
+    "content": "Ciao a tutti!"
+}
+</pre>
+
+# DATABASE
+## 🗄️ Tabella users
+Contiene le informazioni di base per ogni utente registrato.
+
+- id (UUID): L'identificativo unico dell'utente.
+
+- username (TEXT): Il nome utente, che deve essere unico.
+
+- password_hash (TEXT): L'hash della password dell'utente, non viene mai inviato al client.
+
+- created_at (TIMESTAMPTZ): La data e l'ora di registrazione.
+
+## 🗄️ Tabella groups
+Memorizza i gruppi di chat creati.
+
+- id (UUID): L'identificativo unico del gruppo.
+
+- name (TEXT): Il nome del gruppo.
+
+- created_at (TIMESTAMPTZ): La data e l'ora di creazione.
+
+## 🗄️ Tabella group_members
+Tabella di collegamento che associa gli utenti ai gruppi di cui fanno parte.
+
+- user_id (UUID): Chiave esterna che fa riferimento a users.id.
+
+- group_id (UUID): Chiave esterna che fa riferimento a groups.id.
+
+## 🗄️ Tabella group_invitations
+Traccia gli inviti in sospeso per entrare nei gruppi.
+
+- id (UUID): L'identificativo unico dell'invito.
+
+- group_id (UUID): Il gruppo a cui l'utente è stato invitato.
+
+- inviter_id (UUID): L'utente che ha inviato l'invito.
+
+- invited_user_id (UUID): L'utente che ha ricevuto l'invito.
+
+- status (VARCHAR): Lo stato dell'invito (es. 'pending', 'accepted').
+
+## 🗄️ Tabella messages
+Archivia tutti i messaggi inviati all'interno dei gruppi.
+
+- id (UUID): L'identificativo unico del messaggio.
+
+- group_id (UUID): Il gruppo in cui è stato inviato il messaggio.
+
+- sender_id (UUID): L'utente che ha inviato il messaggio.
+
+- content (TEXT): Il contenuto testuale del messaggio.
+
+- created_at (TIMESTAMPTZ): La data e l'ora di invio.
+
+## 🗄️ Tabella _sqlx_migrations
+Tabella interna gestita da SQLx per tenere traccia delle migrazioni del database applicate.
