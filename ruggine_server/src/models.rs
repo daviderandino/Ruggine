@@ -9,12 +9,38 @@ use uuid::Uuid;
 pub struct User {
     pub id: Uuid,
     pub username: String,
+    // La password non viene mai serializzata e inviata al client
+    #[serde(skip_serializing)]
+    pub password_hash: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
 #[derive(Deserialize)]
 pub struct RegisterUserPayload {
+    pub username: String,
+    pub password: String, // Aggiunto campo password
+}
+
+// Nuovo payload per il login
+#[derive(Deserialize)]
+pub struct LoginPayload {
+    pub username: String,
+    pub password: String,
+}
+
+// Nuova risposta per il login, che contiene il token
+#[derive(Serialize)]
+pub struct LoginResponse {
+    pub token: String,
+}
+
+// Claims JWT
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Claims {
+    pub sub: Uuid,   // Subject (user_id)
+    pub exp: i64,    // Expiration time
+    pub iat: i64,    // Issued at
     pub username: String,
 }
 

@@ -1,6 +1,6 @@
 use crate::models::{
     CreateGroupPayload, Group, InviteToGroupPayload, RegisterUserPayload, User, WsClientMessage,
-    WsServerMessage,
+    WsServerMessage, LoginPayload, LoginResponse, Claims,
 };
 use crate::{AppState, ChatState};
 use axum::{
@@ -12,7 +12,10 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use bcrypt::{hash, verify, DEFAULT_COST};
+use chrono::{Duration, Utc};
 use futures_util::{stream::StreamExt, SinkExt};
+use jsonwebtoken::{encode, EncodingKey, Header};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use tokio::sync::broadcast;
@@ -20,30 +23,113 @@ use uuid::Uuid;
 
 // --- Gestione Utenti ---
 
-// Riportata alla versione originale (solo username) ma con AppState corretto
+// Modificato per gestire la password
 pub async fn register_user(
     State(app_state): State<AppState>,
     Json(payload): Json<RegisterUserPayload>,
 ) -> Result<Json<User>, (StatusCode, String)> {
+    if payload.password.len() < 8 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Password must be at least 8 characters long.".to_string(),
+        ));
+    }
+
+    let password_hash = hash(payload.password, DEFAULT_COST).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to hash password.".to_string(),
+        )
+    })?;
+
     sqlx::query_as!(
         User,
-        "INSERT INTO users (username) VALUES ($1) RETURNING id, username, created_at",
-        payload.username
+        "INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id, username, password_hash, created_at",
+        payload.username,
+        password_hash
     )
     .fetch_one(&app_state.db_pool)
     .await
     .map(Json)
-    .map_err(|e| (StatusCode::CONFLICT, format!("Username already exists: {}", e)))
+    .map_err(|e| {
+        if let Some(db_err) = e.as_database_error() {
+            if db_err.is_unique_violation() {
+                return (StatusCode::CONFLICT, "Username already exists.".to_string());
+            }
+        }
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Database error: {}", e),
+        )
+    })
+}
+
+// Nuovo handler per il login
+pub async fn login_user(
+    State(app_state): State<AppState>,
+    Json(payload): Json<LoginPayload>,
+) -> Result<Json<LoginResponse>, (StatusCode, String)> {
+    let user = sqlx::query_as!(
+        User,
+        "SELECT id, username, password_hash, created_at FROM users WHERE username = $1",
+        payload.username
+    )
+    .fetch_optional(&app_state.db_pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "Invalid username or password.".to_string(),
+        )
+    })?;
+
+    let is_valid = verify(&payload.password, &user.password_hash)
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to verify password.".to_string(),
+            )
+        })?;
+
+    if !is_valid {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "Invalid username or password.".to_string(),
+        ));
+    }
+
+    let now = Utc::now();
+    let claims = Claims {
+        sub: user.id,
+        iat: now.timestamp(),
+        exp: (now + Duration::days(1)).timestamp(), // Token valido per 1 giorno
+        username: user.username,
+    };
+
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(app_state.jwt_secret.as_ref()),
+    )
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to create token".to_string(),
+        )
+    })?;
+
+    Ok(Json(LoginResponse { token }))
 }
 
 pub async fn get_user_by_username(
     State(app_state): State<AppState>,
     Path(username): Path<String>,
 ) -> Result<Json<User>, (StatusCode, String)> {
-    // Modifichiamo la query per selezionare solo le colonne necessarie
+    // La query deve essere aggiornata per includere la colonna password_hash
     sqlx::query_as!(
         User,
-        "SELECT id, username, created_at FROM users WHERE username = $1",
+        "SELECT id, username, password_hash, created_at FROM users WHERE username = $1",
         username
     )
     .fetch_optional(&app_state.db_pool)
@@ -54,7 +140,7 @@ pub async fn get_user_by_username(
 }
 
 // --- Gestione Gruppi ---
-
+// (Il resto del file da qui in poi rimane invariato)
 pub async fn create_group(
     State(app_state): State<AppState>,
     Json(payload): Json<CreateGroupPayload>,
@@ -213,6 +299,11 @@ pub async fn chat_handler(
 ) -> impl IntoResponse {
     let user_id_str = params.get("user_id").cloned().unwrap_or_default();
     let user_id = Uuid::parse_str(&user_id_str).unwrap_or_default();
+    
+    // NOTA: In un'applicazione reale, l'autenticazione per il WebSocket
+    // dovrebbe avvenire tramite il token JWT, non passando l'user_id come parametro.
+    // Per semplicità, questa parte non è stata modificata.
+
     ws.on_upgrade(move |socket| {
         handle_socket(
             socket,

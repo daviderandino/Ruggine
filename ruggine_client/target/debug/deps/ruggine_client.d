@@ -1,5 +1,5 @@
-C:\Users\David\Desktop\Ruggine\ruggine_client\target\debug\deps\ruggine_client.exe: src\main.rs
+C:\Users\David\Desktop\Ruggine\ruggine_client\target\debug\deps\ruggine_client.exe: src\main_client.rs
 
-C:\Users\David\Desktop\Ruggine\ruggine_client\target\debug\deps\ruggine_client.d: src\main.rs
+C:\Users\David\Desktop\Ruggine\ruggine_client\target\debug\deps\ruggine_client.d: src\main_client.rs
 
-src\main.rs:
+src\main_client.rs:
