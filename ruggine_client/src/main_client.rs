@@ -58,6 +58,7 @@ enum ToBackend {
     Login(String, String),
     CreateGroup(String),
     JoinGroup(Group),
+    LeaveGroup(Uuid),
     InviteUser(String, String),
     SendMessage(String),
     FetchInvitations,
@@ -69,8 +70,8 @@ enum ToBackend {
 enum FromBackend {
     LoggedIn(User, String, Vec<Group>),
     Registered,
-    // MODIFICA: Unisce l'unione al gruppo e il caricamento della cronologia
     GroupJoined(Group, Vec<WsServerMessage>),
+    GroupLeft,
     NewMessage(WsServerMessage),
     Info(String),
     Error(String),
@@ -153,7 +154,6 @@ impl RuggineApp {
                                 if let (Some(user), Some(token)) = (&current_user, &current_token) {
                                     let (ws_tx, _) = handle_join_group(&client, group.clone(), user.clone(), token.clone(), from_backend_tx.clone()).await;
                                     ws_sender = ws_tx;
-                                    // Quando si crea un gruppo, la cronologia è vuota, quindi non serve inviarla.
                                     let _ = from_backend_tx.send(FromBackend::GroupCreated(group)).await;
                                 }
                             }
@@ -168,6 +168,14 @@ impl RuggineApp {
                             ws_sender = ws_tx;
                             let _ = from_backend_tx.send(join_res).await;
                         }
+                    }
+                    ToBackend::LeaveGroup(group_id) => {
+                        let res = handle_leave_group(&client, group_id).await;
+                        if let FromBackend::GroupLeft = res {
+                            // Disconnette dal websocket chiudendo il sender
+                            ws_sender = None;
+                        }
+                        let _ = from_backend_tx.send(res).await;
                     }
                     ToBackend::InviteUser(group_name, username_to_invite) => {
                         let res = handle_invite(&client, group_name, username_to_invite).await;
@@ -265,16 +273,20 @@ impl RuggineApp {
                     self.info_message = Some("Registrazione avvenuta! Ora puoi effettuare il login.".into());
                     self.auth_state = AuthState::Login;
                 }
-                // MODIFICA: Gestisce il nuovo messaggio unificato
                 FromBackend::GroupJoined(group, history) => {
                     self.info_message = Some(format!("Entrato in '{}'", group.name));
                     self.current_group = Some(group);
-                    self.messages = history; // Imposta la cronologia ricevuta
+                    self.messages = history;
                 }
                 FromBackend::GroupCreated(group) => {
                     self.info_message = Some(format!("Gruppo '{}' creato.", group.name));
                     self.current_group = Some(group);
-                    self.messages.clear(); // Un nuovo gruppo ha la cronologia vuota
+                    self.messages.clear();
+                }
+                FromBackend::GroupLeft => {
+                    self.info_message = Some(format!("Hai lasciato il gruppo '{}'", self.current_group.as_ref().unwrap().name));
+                    self.current_group = None;
+                    self.messages.clear();
                 }
                 FromBackend::NewMessage(msg) => self.messages.push(msg),
                 FromBackend::Error(err) => self.error_message = Some(err),
@@ -332,17 +344,17 @@ impl RuggineApp {
                 ui.add_space(10.0);
                 ui.heading(format!("Ciao, {}!", self.current_user.as_ref().unwrap().username));
                 ui.add_space(20.0);
-                Frame::none().inner_margin(Margin::symmetric(10.0, 15.0)).show(ui, |ui| {
-                    ui.label("Crea Gruppo");
-                    ui.text_edit_singleline(&mut self.create_group_input);
-                    if ui.button("➕ Crea").clicked() {
-                        if !self.create_group_input.is_empty() {
-                           let _ = self.to_backend_tx.try_send(ToBackend::CreateGroup(self.create_group_input.clone()));
-                            self.create_group_input.clear();
-                        }
-                    }
-                });
+                
                 if let Some(group) = &self.current_group {
+                    ui.label("Gruppo Attuale:");
+                    ui.heading(format!("# {}", group.name));
+                    
+                    ui.add_space(10.0);
+                    if ui.button("❌ Esci dal Gruppo").clicked() {
+                        let _ = self.to_backend_tx.try_send(ToBackend::LeaveGroup(group.id));
+                    }
+                    ui.add_space(10.0);
+
                     Frame::none().inner_margin(Margin::symmetric(10.0, 15.0)).show(ui, |ui| {
                         ui.label(format!("Invita in '{}':", group.name));
                         ui.text_edit_singleline(&mut self.invite_user_input);
@@ -354,11 +366,26 @@ impl RuggineApp {
                         }
                     });
                 }
+                
+                ui.separator();
+
+                Frame::none().inner_margin(Margin::symmetric(10.0, 15.0)).show(ui, |ui| {
+                    ui.label("Crea un nuovo Gruppo");
+                    ui.text_edit_singleline(&mut self.create_group_input);
+                    if ui.button("➕ Crea").clicked() {
+                        if !self.create_group_input.is_empty() {
+                           let _ = self.to_backend_tx.try_send(ToBackend::CreateGroup(self.create_group_input.clone()));
+                            self.create_group_input.clear();
+                        }
+                    }
+                });
+                
                 ui.separator();
                 self.draw_invitations_section(ui);
                 self.draw_info_error_messages(ui);
             });
         });
+
         if let Some(group) = &self.current_group {
             egui::TopBottomPanel::bottom("chat_input_panel").resizable(false).min_height(40.0).show(ctx, |ui| {
                 ui.separator();
@@ -543,6 +570,14 @@ async fn handle_create_group(client: &HttpClient, name: String) -> Result<Group,
     }
 }
 
+async fn handle_leave_group(client: &HttpClient, group_id: Uuid) -> FromBackend {
+    match client.delete(format!("{}/groups/{}/leave", API_BASE_URL, group_id)).send().await {
+        Ok(res) if res.status().is_success() => FromBackend::GroupLeft,
+        Ok(res) => FromBackend::Error(res.text().await.unwrap_or_else(|_| "Errore durante l'uscita dal gruppo.".into())),
+        Err(_) => FromBackend::Error("Errore di connessione.".into()),
+    }
+}
+
 async fn handle_invite(
     client: &HttpClient,
     group_name: String,
@@ -617,7 +652,6 @@ async fn handle_decline_invitation(client: &HttpClient, id: Uuid) -> FromBackend
     }
 }
 
-// MODIFICA: La funzione ora restituisce il nuovo messaggio unificato
 async fn handle_join_group(
     client: &HttpClient,
     group: Group,

@@ -1,5 +1,5 @@
 use axum::{
-    routing::{get, post},
+    routing::{get, post, delete},
     Router,
 };
 use dashmap::DashMap;
@@ -65,6 +65,10 @@ async fn main() {
         .route(
             "/groups/:group_id/messages", // Rotta per la cronologia
             get(handlers::get_group_messages),
+        )
+        .route(
+            "/groups/:group_id/leave", // <-- AGGIUNGI QUESTA ROTTA
+            delete(handlers::leave_group),
         )
         .route("/groups/:group_id/invite", post(handlers::invite_to_group))
         .route("/groups/:group_id/chat", get(handlers::chat_handler))

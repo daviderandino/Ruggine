@@ -24,6 +24,53 @@ use uuid::Uuid;
 
 // --- Gestione Utenti ---
 
+pub async fn leave_group(
+    claims: Claims,
+    State(app_state): State<AppState>,
+    Path(group_id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    let user_id = claims.sub;
+
+    let mut tx = app_state.db_pool.begin().await?;
+
+    // 1. Rimuovi l'utente dalla tabella dei membri del gruppo
+    let result = sqlx::query!(
+        "DELETE FROM group_members WHERE user_id = $1 AND group_id = $2",
+        user_id,
+        group_id
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Se la query non ha rimosso nessuna riga, l'utente non era membro
+    if result.rows_affected() == 0 {
+        // Puoi decidere se restituire un errore o semplicemente successo.
+        // Restituire successo è idempotente.
+        tx.commit().await?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
+    // 2. Controlla quanti membri sono rimasti nel gruppo
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM group_members WHERE group_id = $1")
+        .bind(group_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    // 3. Se non ci sono più membri, elimina il gruppo
+    if count.0 == 0 {
+        // L'eliminazione a cascata (ON DELETE CASCADE nel DB) si occuperà
+        // di rimuovere messaggi e inviti associati.
+        sqlx::query!("DELETE FROM groups WHERE id = $1", group_id)
+            .execute(&mut *tx)
+            .await?;
+        tracing::info!("Gruppo {} eliminato perché non ha più membri.", group_id);
+    }
+
+    tx.commit().await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn register_user(
     State(app_state): State<AppState>,
     Json(payload): Json<RegisterUserPayload>,
