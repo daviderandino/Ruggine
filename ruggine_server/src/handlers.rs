@@ -1,4 +1,4 @@
-// L'import di Claims deve puntare al file models.rs dove è definita la struct
+use crate::error::AppError;
 use crate::models::{
     Claims, CreateGroupPayload, Group, Invitation, InviteToGroupPayload, LoginPayload,
     LoginResponse, RegisterUserPayload, User, WsClientMessage, WsServerMessage,
@@ -22,27 +22,18 @@ use std::collections::HashMap;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-// Il resto del file handlers.rs rimane identico alla versione "sicura"
-// che ti ho fornito in precedenza. Te la includo qui per completezza.
-
-// --- Gestione Utenti (invariata) ---
 pub async fn register_user(
     State(app_state): State<AppState>,
     Json(payload): Json<RegisterUserPayload>,
-) -> Result<Json<User>, (StatusCode, String)> {
-     if payload.password.len() < 8 {
-        return Err((
-            StatusCode::BAD_REQUEST,
+) -> Result<Json<User>, AppError> {
+    if payload.password.len() < 8 {
+        return Err(AppError::InvalidInput(
             "Password must be at least 8 characters long.".to_string(),
         ));
     }
 
-    let password_hash = hash(payload.password, DEFAULT_COST).map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to hash password.".to_string(),
-        )
-    })?;
+    // CORREZIONE: Ora puoi usare `?` direttamente grazie all'impl `From`
+    let password_hash = hash(payload.password, DEFAULT_COST)?;
 
     sqlx::query_as!(
         User,
@@ -56,40 +47,28 @@ pub async fn register_user(
     .map_err(|e| {
         if let Some(db_err) = e.as_database_error() {
             if db_err.is_unique_violation() {
-                return (StatusCode::CONFLICT, "Username already exists.".to_string());
+                return AppError::UsernameExists;
             }
         }
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
+        e.into()
     })
 }
 
 pub async fn login_user(
     State(app_state): State<AppState>,
     Json(payload): Json<LoginPayload>,
-) -> Result<Json<LoginResponse>, (StatusCode, String)> {
+) -> Result<Json<LoginResponse>, AppError> {
     let user = sqlx::query_as!(
         User,
         "SELECT id, username, password_hash, created_at FROM users WHERE username = $1",
         payload.username
     )
     .fetch_optional(&app_state.db_pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            "Invalid username or password.".to_string(),
-        )
-    })?;
+    .await?
+    .ok_or(AppError::WrongCredentials)?;
 
     if !verify(&payload.password, &user.password_hash).unwrap_or(false) {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "Invalid username or password.".to_string(),
-        ));
+        return Err(AppError::WrongCredentials);
     }
 
     let now = Utc::now();
@@ -104,13 +83,7 @@ pub async fn login_user(
         &Header::default(),
         &claims,
         &EncodingKey::from_secret(app_state.jwt_secret.as_ref()),
-    )
-    .map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to create token".to_string(),
-        )
-    })?;
+    )?;
 
     Ok(Json(LoginResponse { token, user }))
 }
@@ -118,36 +91,30 @@ pub async fn login_user(
 pub async fn get_user_by_username(
     State(app_state): State<AppState>,
     Path(username): Path<String>,
-) -> Result<Json<User>, (StatusCode, String)> {
+) -> Result<Json<User>, AppError> {
     sqlx::query_as!(
         User,
         "SELECT id, username, password_hash, created_at FROM users WHERE username = $1",
         username
     )
     .fetch_optional(&app_state.db_pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .await?
     .map(Json)
-    .ok_or_else(|| (StatusCode::NOT_FOUND, "User not found".to_string()))
+    .ok_or(AppError::UserNotFound)
 }
-
-
-// --- Handler Protetti con Auth ---
 
 pub async fn create_group(
     claims: Claims,
     State(app_state): State<AppState>,
     Json(payload): Json<CreateGroupPayload>,
-) -> Result<Json<Group>, (StatusCode, String)> {
+) -> Result<Json<Group>, AppError> {
     let creator_id = claims.sub;
 
-    let mut tx = app_state.db_pool.begin().await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to start transaction: {}", e)))?;
+    let mut tx = app_state.db_pool.begin().await?;
 
     let new_group = sqlx::query_as!(Group, "INSERT INTO groups (name) VALUES ($1) RETURNING *", payload.name)
         .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create group: {}", e)))?;
+        .await?;
 
     sqlx::query!(
         "INSERT INTO group_members (user_id, group_id) VALUES ($1, $2)",
@@ -155,11 +122,9 @@ pub async fn create_group(
         new_group.id
     )
     .execute(&mut *tx)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to add creator to group: {}", e)))?;
+    .await?;
 
-    tx.commit().await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to commit transaction: {}", e)))?;
+    tx.commit().await?;
 
     Ok(Json(new_group))
 }
@@ -169,57 +134,50 @@ pub async fn invite_to_group(
     State(app_state): State<AppState>,
     Path(group_id): Path<Uuid>,
     Json(payload): Json<InviteToGroupPayload>,
-) -> Result<StatusCode, (StatusCode, String)> {
+) -> Result<StatusCode, AppError> {
     let inviter_id = claims.sub;
 
     if inviter_id == payload.user_to_invite_id {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "A user cannot invite themselves.".to_string(),
-        ));
+        return Err(AppError::CannotInviteSelf);
     }
     
-    let mut tx = app_state.db_pool.begin().await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+    let mut tx = app_state.db_pool.begin().await?;
 
     let is_inviter_a_member: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM group_members WHERE user_id = $1 AND group_id = $2)")
         .bind(inviter_id)
         .bind(group_id)
-        .fetch_one(&mut *tx).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .fetch_one(&mut *tx).await?;
 
     if !is_inviter_a_member.0 {
-        return Err((StatusCode::FORBIDDEN, "Only group members can send invites.".to_string()));
+        return Err(AppError::MissingPermissions);
     }
     
     let is_already_member: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM group_members WHERE user_id = $1 AND group_id = $2)")
         .bind(payload.user_to_invite_id).bind(group_id)
-        .fetch_one(&mut *tx).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .fetch_one(&mut *tx).await?;
 
     if is_already_member.0 {
-        return Err((StatusCode::CONFLICT, "User is already a member of this group.".to_string()));
+        return Err(AppError::UserAlreadyInGroup);
     }
 
     let result = sqlx::query!(
-        r#"
-        INSERT INTO group_invitations (group_id, inviter_id, invited_user_id, status)
-        VALUES ($1, $2, $3, 'pending')
-        "#,
+        "INSERT INTO group_invitations (group_id, inviter_id, invited_user_id, status) VALUES ($1, $2, $3, 'pending')",
         group_id, inviter_id, payload.user_to_invite_id
     )
     .execute(&mut *tx).await;
     
     match result {
         Ok(_) => {
-            tx.commit().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to commit transaction: {}", e)))?;
+            tx.commit().await?;
             Ok(StatusCode::CREATED)
         }
         Err(e) => {
+            // CORREZIONE: Usa le varianti di errore corrette
             if let Some(db_err) = e.as_database_error() {
-                if db_err.is_unique_violation() { return Err((StatusCode::CONFLICT, "An invitation for this user to this group already exists.".to_string())); }
-                if db_err.is_foreign_key_violation() { return Err((StatusCode::NOT_FOUND, "The user or group specified does not exist.".to_string())); }
+                if db_err.is_unique_violation() { return Err(AppError::InvitationAlreadyExists); }
+                if db_err.is_foreign_key_violation() { return Err(AppError::UserOrGroupNotFound); }
             }
-            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+            Err(e.into())
         }
     }
 }
@@ -227,66 +185,53 @@ pub async fn invite_to_group(
 pub async fn get_pending_invitations(
     claims: Claims,
     State(app_state): State<AppState>,
-) -> Result<Json<Vec<Invitation>>, (StatusCode, String)> {
-    let user_id = claims.sub;
-
+) -> Result<Json<Vec<Invitation>>, AppError> {
     sqlx::query_as!(
         Invitation,
         r#"
-        SELECT
-            gi.id,
-            g.id as "group_id",
-            g.name as "group_name",
-            u.username as "inviter_username"
+        SELECT gi.id, g.id as "group_id", g.name as "group_name", u.username as "inviter_username"
         FROM group_invitations gi
         JOIN groups g ON gi.group_id = g.id
         JOIN users u ON gi.inviter_id = u.id
         WHERE gi.invited_user_id = $1 AND gi.status = 'pending'
         "#,
-        user_id
+        claims.sub
     )
     .fetch_all(&app_state.db_pool)
     .await
     .map(Json)
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    .map_err(Into::into)
 }
 
 pub async fn accept_invitation(
     claims: Claims,
     State(app_state): State<AppState>,
     Path(invitation_id): Path<Uuid>,
-) -> Result<Json<Group>, (StatusCode, String)> {
+) -> Result<Json<Group>, AppError> {
     let user_id = claims.sub;
     
-    let mut tx = app_state.db_pool.begin().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut tx = app_state.db_pool.begin().await?;
 
     let invitation = sqlx::query!(
         "SELECT group_id FROM group_invitations WHERE id = $1 AND invited_user_id = $2 AND status = 'pending'",
         invitation_id, user_id
     )
-    .fetch_optional(&mut *tx).await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .ok_or_else(|| (StatusCode::NOT_FOUND, "Invitation not found or not pending for this user.".to_string()))?;
+    .fetch_optional(&mut *tx).await?
+    .ok_or(AppError::InvitationNotFound)?; // CORREZIONE: Usa la variante corretta
 
-    sqlx::query!(
-        "UPDATE group_invitations SET status = 'accepted' WHERE id = $1",
-        invitation_id
-    )
-    .execute(&mut *tx).await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    sqlx::query!("UPDATE group_invitations SET status = 'accepted' WHERE id = $1", invitation_id)
+        .execute(&mut *tx)
+        .await?;
 
-    sqlx::query!(
-        "INSERT INTO group_members (user_id, group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        user_id, invitation.group_id
-    )
-    .execute(&mut *tx).await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    sqlx::query!("INSERT INTO group_members (user_id, group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", user_id, invitation.group_id)
+        .execute(&mut *tx)
+        .await?;
 
     let group = sqlx::query_as!(Group, "SELECT * FROM groups WHERE id = $1", invitation.group_id)
-        .fetch_one(&mut *tx).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .fetch_one(&mut *tx)
+        .await?;
 
-    tx.commit().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    tx.commit().await?;
 
     Ok(Json(group))
 }
@@ -295,36 +240,33 @@ pub async fn decline_invitation(
     claims: Claims,
     State(app_state): State<AppState>,
     Path(invitation_id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    let user_id = claims.sub;
-
+) -> Result<StatusCode, AppError> {
     let result = sqlx::query!(
         "UPDATE group_invitations SET status = 'declined' WHERE id = $1 AND invited_user_id = $2 AND status = 'pending'",
-        invitation_id, user_id
+        invitation_id, claims.sub
     )
-    .execute(&app_state.db_pool).await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    .execute(&app_state.db_pool).await?;
 
     if result.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, "Invitation not found or not pending for this user.".to_string()));
+        // CORREZIONE: Usa la variante corretta
+        return Err(AppError::InvitationNotFound);
     }
 
     Ok(StatusCode::NO_CONTENT)
 }
 
-// Handler non protetti e WebSocket (invariati)
 pub async fn get_group_by_name(
     State(app_state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<Json<Group>, (StatusCode, String)> {
+) -> Result<Json<Group>, AppError> {
     sqlx::query_as!(Group, "SELECT * FROM groups WHERE name = $1", name)
         .fetch_optional(&app_state.db_pool)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .await?
         .map(Json)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Group not found".to_string()))
+        .ok_or(AppError::GroupNotFound)
 }
 
+// L'handler WebSocket rimane invariato
 pub async fn chat_handler(
     ws: WebSocketUpgrade,
     State(app_state): State<AppState>,
@@ -381,9 +323,6 @@ async fn handle_socket(socket: WebSocket, db_pool: PgPool, chat_state: ChatState
         _ = (&mut recv_task) => send_task.abort(),
         _ = (&mut send_task) => recv_task.abort(),
     };
-
-    if chat_state.get(&group_id).map(|entry| entry.receiver_count()) == Some(0) {
-        tracing::info!("Nessun utente rimasto nel gruppo {}, pulizia canale.", group_id);
-        chat_state.remove(&group_id);
-    }
+    
+    chat_state.remove_if(&group_id, |_, channel| channel.receiver_count() == 0);
 }

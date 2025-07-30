@@ -18,6 +18,7 @@ pub mod auth;
 mod db;
 mod handlers;
 mod models;
+pub mod error;
 
 pub type ChatState = Arc<DashMap<Uuid, broadcast::Sender<String>>>;
 
