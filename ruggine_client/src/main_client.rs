@@ -69,8 +69,8 @@ enum ToBackend {
 enum FromBackend {
     LoggedIn(User, String, Vec<Group>),
     Registered,
-    GroupJoined(Group),
-    MessagesFetched(Vec<WsServerMessage>),
+    // MODIFICA: Unisce l'unione al gruppo e il caricamento della cronologia
+    GroupJoined(Group, Vec<WsServerMessage>),
     NewMessage(WsServerMessage),
     Info(String),
     Error(String),
@@ -153,6 +153,7 @@ impl RuggineApp {
                                 if let (Some(user), Some(token)) = (&current_user, &current_token) {
                                     let (ws_tx, _) = handle_join_group(&client, group.clone(), user.clone(), token.clone(), from_backend_tx.clone()).await;
                                     ws_sender = ws_tx;
+                                    // Quando si crea un gruppo, la cronologia è vuota, quindi non serve inviarla.
                                     let _ = from_backend_tx.send(FromBackend::GroupCreated(group)).await;
                                 }
                             }
@@ -264,18 +265,16 @@ impl RuggineApp {
                     self.info_message = Some("Registrazione avvenuta! Ora puoi effettuare il login.".into());
                     self.auth_state = AuthState::Login;
                 }
-                FromBackend::GroupJoined(group) => {
+                // MODIFICA: Gestisce il nuovo messaggio unificato
+                FromBackend::GroupJoined(group, history) => {
                     self.info_message = Some(format!("Entrato in '{}'", group.name));
                     self.current_group = Some(group);
-                    self.messages.clear();
+                    self.messages = history; // Imposta la cronologia ricevuta
                 }
                 FromBackend::GroupCreated(group) => {
                     self.info_message = Some(format!("Gruppo '{}' creato.", group.name));
                     self.current_group = Some(group);
-                    self.messages.clear();
-                }
-                FromBackend::MessagesFetched(history) => {
-                    self.messages = history;
+                    self.messages.clear(); // Un nuovo gruppo ha la cronologia vuota
                 }
                 FromBackend::NewMessage(msg) => self.messages.push(msg),
                 FromBackend::Error(err) => self.error_message = Some(err),
@@ -618,6 +617,7 @@ async fn handle_decline_invitation(client: &HttpClient, id: Uuid) -> FromBackend
     }
 }
 
+// MODIFICA: La funzione ora restituisce il nuovo messaggio unificato
 async fn handle_join_group(
     client: &HttpClient,
     group: Group,
@@ -631,10 +631,11 @@ async fn handle_join_group(
         Err(e) => return (None, FromBackend::Error(format!("Impossibile connettersi alla chat: {}", e))),
     };
 
+    let mut history = vec![];
     if let Ok(res) = client.get(format!("{}/groups/{}/messages", API_BASE_URL, group.id)).send().await {
         if res.status().is_success() {
-            if let Ok(history) = res.json::<Vec<WsServerMessage>>().await {
-                let _ = from_backend_tx.send(FromBackend::MessagesFetched(history)).await;
+            if let Ok(h) = res.json::<Vec<WsServerMessage>>().await {
+                history = h;
             }
         }
     }
@@ -654,7 +655,7 @@ async fn handle_join_group(
         }
     });
     
-    (Some(tx), FromBackend::GroupJoined(group))
+    (Some(tx), FromBackend::GroupJoined(group, history))
 }
 
 fn main() -> Result<(), eframe::Error> {

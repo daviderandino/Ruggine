@@ -300,7 +300,10 @@ pub async fn get_group_messages(
         return Err(AppError::MissingPermissions);
     }
 
-    let messages = sqlx::query_as!(
+    // --- INIZIO MODIFICA ---
+
+    // 1. Recupera gli ultimi 100 messaggi in ordine cronologico inverso
+    let mut messages = sqlx::query_as!(
         WsServerMessage,
         r#"
         SELECT
@@ -310,12 +313,18 @@ pub async fn get_group_messages(
         FROM group_messages m
         JOIN users u ON m.user_id = u.id
         WHERE m.group_id = $1
-        ORDER BY m.created_at ASC
+        ORDER BY m.created_at DESC
+        LIMIT 100
         "#,
         group_id
     )
     .fetch_all(&app_state.db_pool)
     .await?;
+
+    // 2. Inverti la lista per ripristinare l'ordine cronologico corretto (dal più vecchio al più nuovo)
+    messages.reverse();
+
+    // --- FINE MODIFICA ---
 
     Ok(Json(messages))
 }
