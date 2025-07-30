@@ -445,18 +445,40 @@ impl RuggineApp {
     }
 
     fn draw_message_bubble(&self, ui: &mut egui::Ui, msg: &WsServerMessage) {
+        // --- INIZIO MODIFICA ---
+        // Controlla se è un messaggio di sistema
+        if msg.sender_id.is_nil() {
+            ui.add_space(4.0);
+            ui.with_layout(Layout::top_down(Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(&msg.content)
+                        .italics()
+                        .color(egui::Color32::GRAY),
+                );
+            });
+            ui.add_space(4.0);
+            return; // Esci dalla funzione per non disegnare la bolla
+        }
+        // --- FINE MODIFICA ---
+
+        // Il codice seguente è per i messaggi normali degli utenti
         let is_my_message = self.current_user.as_ref().unwrap().id == msg.sender_id;
         let layout = if is_my_message { Layout::right_to_left(Align::TOP) } else { Layout::left_to_right(Align::TOP) };
+        
         ui.with_layout(layout, |ui| {
-             Frame::none().inner_margin(Margin::symmetric(12.0, 8.0)).rounding(Rounding { nw: 12.0, ne: 12.0, sw: if is_my_message { 2.0 } else { 12.0 }, se: if is_my_message { 12.0 } else { 2.0 } }).fill(if is_my_message { egui::Color32::from_rgb(136, 192, 208) } else { ui.style().visuals.widgets.noninteractive.bg_fill }).show(ui, |ui| {
-                ui.set_max_width(ui.available_width() * 0.7);
-                ui.with_layout(Layout::top_down(Align::LEFT), |ui| {
-                    if !is_my_message {
-                         ui.label(egui::RichText::new(&msg.sender_username).strong().color(egui::Color32::from_rgb(202, 211, 245)));
-                    }
-                    ui.label(egui::RichText::new(&msg.content).color(if is_my_message { egui::Color32::from_gray(10) } else { egui::Color32::from_gray(220) }).size(15.0));
+             Frame::none()
+                .inner_margin(Margin::symmetric(12.0, 8.0))
+                .rounding(Rounding { nw: 12.0, ne: 12.0, sw: if is_my_message { 2.0 } else { 12.0 }, se: if is_my_message { 12.0 } else { 2.0 } })
+                .fill(if is_my_message { egui::Color32::from_rgb(136, 192, 208) } else { ui.style().visuals.widgets.noninteractive.bg_fill })
+                .show(ui, |ui| {
+                    ui.set_max_width(ui.available_width() * 0.7);
+                    ui.with_layout(Layout::top_down(Align::LEFT), |ui| {
+                        if !is_my_message {
+                             ui.label(egui::RichText::new(&msg.sender_username).strong().color(egui::Color32::from_rgb(202, 211, 245)));
+                        }
+                        ui.label(egui::RichText::new(&msg.content).color(if is_my_message { egui::Color32::from_gray(10) } else { egui::Color32::from_gray(220) }).size(15.0));
+                    });
                 });
-            });
         });
         ui.add_space(4.0);
     }

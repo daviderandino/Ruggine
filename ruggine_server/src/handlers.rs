@@ -30,10 +30,10 @@ pub async fn leave_group(
     Path(group_id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
     let user_id = claims.sub;
+    let username = claims.username; // Prendiamo il nome utente dalle claims del token
 
     let mut tx = app_state.db_pool.begin().await?;
 
-    // 1. Rimuovi l'utente dalla tabella dei membri del gruppo
     let result = sqlx::query!(
         "DELETE FROM group_members WHERE user_id = $1 AND group_id = $2",
         user_id,
@@ -42,31 +42,42 @@ pub async fn leave_group(
     .execute(&mut *tx)
     .await?;
 
-    // Se la query non ha rimosso nessuna riga, l'utente non era membro
     if result.rows_affected() == 0 {
-        // Puoi decidere se restituire un errore o semplicemente successo.
-        // Restituire successo è idempotente.
         tx.commit().await?;
         return Ok(StatusCode::NO_CONTENT);
     }
 
-    // 2. Controlla quanti membri sono rimasti nel gruppo
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM group_members WHERE group_id = $1")
         .bind(group_id)
         .fetch_one(&mut *tx)
         .await?;
+    
+    // Impegnamo la transazione prima di inviare il messaggio broadcast
+    tx.commit().await?;
 
-    // 3. Se non ci sono più membri, elimina il gruppo
+    // --- INIZIO MODIFICA ---
+    // Invia un messaggio di notifica alla chat del gruppo
+    if let Some(tx) = app_state.chat_state.get(&group_id) {
+        let system_message = WsServerMessage {
+            sender_id: Uuid::nil(), // ID speciale per i messaggi di sistema
+            sender_username: "system".to_string(), // Non mostrato, ma utile per debug
+            content: format!("{} ha lasciato il gruppo.", username),
+        };
+        // Invia il messaggio, ignorando l'errore se non ci sono più iscritti
+        let _ = tx.send(serde_json::to_string(&system_message).unwrap());
+    }
+    // --- FINE MODIFICA ---
+
+    // Se non ci sono più membri, ora che la notifica è stata inviata, possiamo pulire il gruppo
     if count.0 == 0 {
-        // L'eliminazione a cascata (ON DELETE CASCADE nel DB) si occuperà
-        // di rimuovere messaggi e inviti associati.
         sqlx::query!("DELETE FROM groups WHERE id = $1", group_id)
-            .execute(&mut *tx)
+            .execute(&app_state.db_pool)
             .await?;
         tracing::info!("Gruppo {} eliminato perché non ha più membri.", group_id);
+        
+        // Rimuovi anche lo stato della chat dalla memoria
+        app_state.chat_state.remove(&group_id);
     }
-
-    tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
