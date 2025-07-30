@@ -48,6 +48,7 @@ struct WsServerMessage {
 struct LoginResponse {
     token: String,
     user: User,
+    groups: Vec<Group>,
 }
 
 // --- Messages between UI and Backend Thread ---
@@ -56,6 +57,7 @@ enum ToBackend {
     Register(String, String),
     Login(String, String),
     CreateGroup(String),
+    JoinGroup(Group),
     InviteUser(String, String),
     SendMessage(String),
     FetchInvitations,
@@ -65,15 +67,16 @@ enum ToBackend {
 
 #[derive(Debug)]
 enum FromBackend {
-    LoggedIn(User, String),
+    LoggedIn(User, String, Vec<Group>),
     Registered,
     GroupJoined(Group),
+    MessagesFetched(Vec<WsServerMessage>),
     NewMessage(WsServerMessage),
     Info(String),
     Error(String),
     InvitationsFetched(Vec<Invitation>),
     InvitationDeclined(Uuid),
-    GroupCreated(Group), // **FIX**: New message to handle group creation success
+    GroupCreated(Group),
 }
 
 #[derive(PartialEq)]
@@ -133,7 +136,7 @@ impl RuggineApp {
                         match handle_login(username, password).await {
                             Ok((from_backend_msg, authenticated_client)) => {
                                 client = authenticated_client;
-                                if let FromBackend::LoggedIn(ref user, ref token) = from_backend_msg {
+                                if let FromBackend::LoggedIn(ref user, ref token, _) = from_backend_msg {
                                     current_user = Some(user.clone());
                                     current_token = Some(token.clone());
                                 }
@@ -145,23 +148,24 @@ impl RuggineApp {
                         }
                     }
                     ToBackend::CreateGroup(group_name) => {
-                        // **FIX**: The network handler now correctly handles the response
-                        let res = handle_create_group(&client, group_name).await;
-                        if let Ok(group) = res {
-                           // Automatically join the chat of the newly created group
-                           if let (Some(user), Some(token)) = (&current_user, &current_token) {
-                                let (ws_tx, join_res) = handle_join_group(
-                                    group.clone(),
-                                    user.clone(),
-                                    token.clone(),
-                                    from_backend_tx.clone(),
-                                ).await;
-                                ws_sender = ws_tx;
-                                // Send a specific message for group creation
-                                let _ = from_backend_tx.send(FromBackend::GroupCreated(group)).await;
-                           }
-                        } else if let Err(e) = res {
-                             let _ = from_backend_tx.send(e).await;
+                        match handle_create_group(&client, group_name).await {
+                            Ok(group) => {
+                                if let (Some(user), Some(token)) = (&current_user, &current_token) {
+                                    let (ws_tx, _) = handle_join_group(&client, group.clone(), user.clone(), token.clone(), from_backend_tx.clone()).await;
+                                    ws_sender = ws_tx;
+                                    let _ = from_backend_tx.send(FromBackend::GroupCreated(group)).await;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = from_backend_tx.send(e).await;
+                            }
+                        }
+                    }
+                    ToBackend::JoinGroup(group) => {
+                        if let (Some(user), Some(token)) = (&current_user, &current_token) {
+                            let (ws_tx, join_res) = handle_join_group(&client, group, user.clone(), token.clone(), from_backend_tx.clone()).await;
+                            ws_sender = ws_tx;
+                            let _ = from_backend_tx.send(join_res).await;
                         }
                     }
                     ToBackend::InviteUser(group_name, username_to_invite) => {
@@ -183,18 +187,15 @@ impl RuggineApp {
                     }
                     ToBackend::AcceptInvitation(id) => {
                         if let (Some(user), Some(token)) = (&current_user, &current_token) {
-                            let res = handle_accept_invitation(&client, id).await;
-                            if let Ok(group) = res {
-                                let (ws_tx, join_res) = handle_join_group(
-                                    group,
-                                    user.clone(),
-                                    token.clone(),
-                                    from_backend_tx.clone(),
-                                ).await;
-                                ws_sender = ws_tx;
-                                let _ = from_backend_tx.send(join_res).await;
-                            } else if let Err(e) = res {
-                                let _ = from_backend_tx.send(e).await;
+                             match handle_accept_invitation(&client, id).await {
+                                Ok(group) => {
+                                    let (ws_tx, join_res) = handle_join_group(&client, group, user.clone(), token.clone(), from_backend_tx.clone()).await;
+                                    ws_sender = ws_tx;
+                                    let _ = from_backend_tx.send(join_res).await;
+                                }
+                                Err(e) => {
+                                    let _ = from_backend_tx.send(e).await;
+                                }
                             }
                         }
                     }
@@ -252,13 +253,15 @@ impl RuggineApp {
             self.error_message = None;
             self.info_message = None;
             match msg {
-                FromBackend::LoggedIn(user, token) => {
+                FromBackend::LoggedIn(user, token, groups) => {
                     self.current_user = Some(user);
                     self.auth_token = Some(token);
+                    if let Some(first_group) = groups.get(0).cloned() {
+                        self.to_backend_tx.try_send(ToBackend::JoinGroup(first_group)).ok();
+                    }
                 }
                 FromBackend::Registered => {
-                    self.info_message =
-                        Some("Registrazione avvenuta! Ora puoi effettuare il login.".into());
+                    self.info_message = Some("Registrazione avvenuta! Ora puoi effettuare il login.".into());
                     self.auth_state = AuthState::Login;
                 }
                 FromBackend::GroupJoined(group) => {
@@ -266,11 +269,13 @@ impl RuggineApp {
                     self.current_group = Some(group);
                     self.messages.clear();
                 }
-                // **FIX**: Handle the new GroupCreated message to update the UI
                 FromBackend::GroupCreated(group) => {
                     self.info_message = Some(format!("Gruppo '{}' creato.", group.name));
                     self.current_group = Some(group);
                     self.messages.clear();
+                }
+                FromBackend::MessagesFetched(history) => {
+                    self.messages = history;
                 }
                 FromBackend::NewMessage(msg) => self.messages.push(msg),
                 FromBackend::Error(err) => self.error_message = Some(err),
@@ -512,7 +517,7 @@ async fn handle_login(
             let authenticated_client = HttpClient::builder().default_headers(headers).build().unwrap();
 
             Ok((
-                FromBackend::LoggedIn(login_res.user, login_res.token),
+                FromBackend::LoggedIn(login_res.user, login_res.token, login_res.groups),
                 authenticated_client,
             ))
         }
@@ -527,7 +532,6 @@ async fn handle_login(
     }
 }
 
-// **FIXED FUNCTION**: Now returns the created Group object on success
 async fn handle_create_group(client: &HttpClient, name: String) -> Result<Group, FromBackend> {
     if name.is_empty() { return Err(FromBackend::Error("Il nome del gruppo non può essere vuoto.".into())); }
     let payload = serde_json::json!({ "name": name });
@@ -614,15 +618,31 @@ async fn handle_decline_invitation(client: &HttpClient, id: Uuid) -> FromBackend
     }
 }
 
-async fn handle_join_group(group: Group, _user: User, token: String, from_backend_tx: Sender<FromBackend>) -> (Option<Sender<WsMessage>>, FromBackend) {
+async fn handle_join_group(
+    client: &HttpClient,
+    group: Group,
+    _user: User,
+    token: String,
+    from_backend_tx: Sender<FromBackend>
+) -> (Option<Sender<WsMessage>>, FromBackend) {
     let ws_url = format!("ws://127.0.0.1:3000/groups/{}/chat?token={}", group.id, token);
     let ws_stream = match connect_async(&ws_url).await {
         Ok((stream, _)) => stream,
-        Err(e) => return (None, FromBackend::Error(format!("Impossibile connettersi: {}", e))),
+        Err(e) => return (None, FromBackend::Error(format!("Impossibile connettersi alla chat: {}", e))),
     };
+
+    if let Ok(res) = client.get(format!("{}/groups/{}/messages", API_BASE_URL, group.id)).send().await {
+        if res.status().is_success() {
+            if let Ok(history) = res.json::<Vec<WsServerMessage>>().await {
+                let _ = from_backend_tx.send(FromBackend::MessagesFetched(history)).await;
+            }
+        }
+    }
+
     let (mut write, mut read) = ws_stream.split();
     let (tx, mut rx) = mpsc::channel::<WsMessage>(32);
     tokio::spawn(async move { while let Some(msg) = rx.recv().await { if write.send(msg).await.is_err() { break; } } });
+
     let ui_tx = from_backend_tx.clone();
     tokio::spawn(async move {
         while let Some(Ok(msg)) = read.next().await {
@@ -633,6 +653,7 @@ async fn handle_join_group(group: Group, _user: User, token: String, from_backen
             }
         }
     });
+    
     (Some(tx), FromBackend::GroupJoined(group))
 }
 

@@ -31,6 +31,7 @@ pub struct LoginPayload {
 pub struct LoginResponse {
     pub token: String,
     pub user: User, // Ottimizzazione: restituisce l'utente al login
+    pub groups: Vec<Group>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

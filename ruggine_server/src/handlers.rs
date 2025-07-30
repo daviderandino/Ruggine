@@ -22,6 +22,8 @@ use std::collections::HashMap;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+// --- Gestione Utenti ---
+
 pub async fn register_user(
     State(app_state): State<AppState>,
     Json(payload): Json<RegisterUserPayload>,
@@ -32,7 +34,6 @@ pub async fn register_user(
         ));
     }
 
-    // CORREZIONE: Ora puoi usare `?` direttamente grazie all'impl `From`
     let password_hash = hash(payload.password, DEFAULT_COST)?;
 
     sqlx::query_as!(
@@ -71,6 +72,20 @@ pub async fn login_user(
         return Err(AppError::WrongCredentials);
     }
 
+    let user_groups = sqlx::query_as!(
+        Group,
+        r#"
+        SELECT g.id, g.name, g.created_at
+        FROM groups g
+        JOIN group_members gm ON g.id = gm.group_id
+        WHERE gm.user_id = $1
+        ORDER BY g.created_at ASC
+        "#,
+        user.id
+    )
+    .fetch_all(&app_state.db_pool)
+    .await?;
+
     let now = Utc::now();
     let claims = Claims {
         sub: user.id,
@@ -85,7 +100,11 @@ pub async fn login_user(
         &EncodingKey::from_secret(app_state.jwt_secret.as_ref()),
     )?;
 
-    Ok(Json(LoginResponse { token, user }))
+    Ok(Json(LoginResponse {
+        token,
+        user,
+        groups: user_groups,
+    }))
 }
 
 pub async fn get_user_by_username(
@@ -103,13 +122,14 @@ pub async fn get_user_by_username(
     .ok_or(AppError::UserNotFound)
 }
 
+// --- Handler Protetti con Auth ---
+
 pub async fn create_group(
     claims: Claims,
     State(app_state): State<AppState>,
     Json(payload): Json<CreateGroupPayload>,
 ) -> Result<Json<Group>, AppError> {
     let creator_id = claims.sub;
-
     let mut tx = app_state.db_pool.begin().await?;
 
     let new_group = sqlx::query_as!(Group, "INSERT INTO groups (name) VALUES ($1) RETURNING *", payload.name)
@@ -125,7 +145,6 @@ pub async fn create_group(
     .await?;
 
     tx.commit().await?;
-
     Ok(Json(new_group))
 }
 
@@ -172,7 +191,6 @@ pub async fn invite_to_group(
             Ok(StatusCode::CREATED)
         }
         Err(e) => {
-            // CORREZIONE: Usa le varianti di errore corrette
             if let Some(db_err) = e.as_database_error() {
                 if db_err.is_unique_violation() { return Err(AppError::InvitationAlreadyExists); }
                 if db_err.is_foreign_key_violation() { return Err(AppError::UserOrGroupNotFound); }
@@ -209,7 +227,6 @@ pub async fn accept_invitation(
     Path(invitation_id): Path<Uuid>,
 ) -> Result<Json<Group>, AppError> {
     let user_id = claims.sub;
-    
     let mut tx = app_state.db_pool.begin().await?;
 
     let invitation = sqlx::query!(
@@ -217,7 +234,7 @@ pub async fn accept_invitation(
         invitation_id, user_id
     )
     .fetch_optional(&mut *tx).await?
-    .ok_or(AppError::InvitationNotFound)?; // CORREZIONE: Usa la variante corretta
+    .ok_or(AppError::InvitationNotFound)?;
 
     sqlx::query!("UPDATE group_invitations SET status = 'accepted' WHERE id = $1", invitation_id)
         .execute(&mut *tx)
@@ -232,7 +249,6 @@ pub async fn accept_invitation(
         .await?;
 
     tx.commit().await?;
-
     Ok(Json(group))
 }
 
@@ -248,12 +264,13 @@ pub async fn decline_invitation(
     .execute(&app_state.db_pool).await?;
 
     if result.rows_affected() == 0 {
-        // CORREZIONE: Usa la variante corretta
         return Err(AppError::InvitationNotFound);
     }
 
     Ok(StatusCode::NO_CONTENT)
 }
+
+// --- Handler non protetti e WebSocket ---
 
 pub async fn get_group_by_name(
     State(app_state): State<AppState>,
@@ -266,7 +283,43 @@ pub async fn get_group_by_name(
         .ok_or(AppError::GroupNotFound)
 }
 
-// L'handler WebSocket rimane invariato
+pub async fn get_group_messages(
+    claims: Claims,
+    State(app_state): State<AppState>,
+    Path(group_id): Path<Uuid>,
+) -> Result<Json<Vec<WsServerMessage>>, AppError> {
+    let is_member: (bool,) = sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM group_members WHERE user_id = $1 AND group_id = $2)"
+    )
+    .bind(claims.sub)
+    .bind(group_id)
+    .fetch_one(&app_state.db_pool)
+    .await?;
+
+    if !is_member.0 {
+        return Err(AppError::MissingPermissions);
+    }
+
+    let messages = sqlx::query_as!(
+        WsServerMessage,
+        r#"
+        SELECT
+            m.user_id as "sender_id",
+            u.username as "sender_username",
+            m.content
+        FROM group_messages m
+        JOIN users u ON m.user_id = u.id
+        WHERE m.group_id = $1
+        ORDER BY m.created_at ASC
+        "#,
+        group_id
+    )
+    .fetch_all(&app_state.db_pool)
+    .await?;
+
+    Ok(Json(messages))
+}
+
 pub async fn chat_handler(
     ws: WebSocketUpgrade,
     State(app_state): State<AppState>,
@@ -302,13 +355,31 @@ async fn handle_socket(socket: WebSocket, db_pool: PgPool, chat_state: ChatState
     let (mut sender, mut receiver) = socket.split();
 
     let recv_username = username.clone();
+    let recv_db_pool = db_pool.clone();
+
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(Message::Text(text))) = receiver.next().await {
             let msg: WsClientMessage = match serde_json::from_str(&text) {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            let server_msg = WsServerMessage { sender_id: user_id, sender_username: recv_username.clone(), content: msg.content };
+            
+            if let Err(e) = sqlx::query!(
+                "INSERT INTO group_messages (group_id, user_id, content) VALUES ($1, $2, $3)",
+                group_id, user_id, msg.content
+            )
+            .execute(&recv_db_pool)
+            .await {
+                tracing::error!("Failed to save message to DB: {}", e);
+                continue;
+            }
+
+            let server_msg = WsServerMessage {
+                sender_id: user_id,
+                sender_username: recv_username.clone(),
+                content: msg.content.clone(),
+            };
+            
             if tx.send(serde_json::to_string(&server_msg).unwrap()).is_err() { break; }
         }
     });

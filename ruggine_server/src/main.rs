@@ -13,7 +13,7 @@ use tokio::time;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 
-// La dichiarazione del modulo ora è pubblica
+// Dichiarazione di tutti i moduli
 pub mod auth;
 mod db;
 mod handlers;
@@ -52,9 +52,7 @@ async fn main() {
         chat_state,
         jwt_secret,
     };
-
-    // Ora che il modulo `auth` è pubblico, Axum può trovare l'implementazione
-    // dell'estrattore per `Claims` e questi handler funzioneranno.
+    
     let app = Router::new()
         .route("/users/register", post(handlers::register_user))
         .route("/users/login", post(handlers::login_user))
@@ -64,6 +62,10 @@ async fn main() {
         )
         .route("/groups", post(handlers::create_group))
         .route("/groups/by_name/:name", get(handlers::get_group_by_name))
+        .route(
+            "/groups/:group_id/messages", // Rotta per la cronologia
+            get(handlers::get_group_messages),
+        )
         .route("/groups/:group_id/invite", post(handlers::invite_to_group))
         .route("/groups/:group_id/chat", get(handlers::chat_handler))
         .route("/invitations", get(handlers::get_pending_invitations))
