@@ -1,5 +1,5 @@
-C:\Users\David\Desktop\Ruggine\ruggine_client\target\debug\build\glutin-3ca298add120e157\build_script_build-3ca298add120e157.exe: C:\Users\David\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin-0.31.3\build.rs
+C:\Users\David\Desktop\provaRuggine\RugginePrivate\ruggine_client\target\debug\build\glutin-3ca298add120e157\build_script_build-3ca298add120e157.exe: C:\Users\David\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin-0.31.3\build.rs
 
-C:\Users\David\Desktop\Ruggine\ruggine_client\target\debug\build\glutin-3ca298add120e157\build_script_build-3ca298add120e157.d: C:\Users\David\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin-0.31.3\build.rs
+C:\Users\David\Desktop\provaRuggine\RugginePrivate\ruggine_client\target\debug\build\glutin-3ca298add120e157\build_script_build-3ca298add120e157.d: C:\Users\David\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin-0.31.3\build.rs
 
 C:\Users\David\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin-0.31.3\build.rs:
