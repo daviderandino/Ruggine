@@ -373,3 +373,4 @@ Archivia tutti i messaggi inviati all'interno dei gruppi per creare la cronologi
 ---
 ## 🗄️ Tabella `_sqlx_migrations`
 Tabella interna gestita automaticamente da `sqlx-cli` per tenere traccia delle migrazioni del database che sono state applicate. Non interagire direttamente con questa tabella.
+

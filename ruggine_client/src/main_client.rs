@@ -491,7 +491,7 @@ impl RuggineApp {
                 egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
                     for invitation in self.pending_invitations.clone() {
                         Frame::none().inner_margin(Margin::same(10.0)).fill(ui.style().visuals.widgets.noninteractive.bg_fill).rounding(Rounding::same(5.0)).show(ui, |ui| {
-                            ui.label(egui::RichText::new(&invitation.group_name).strong());
+                            ui.label(egui::RichText::new(&invitation.group_name).strong().color(egui::Color32::WHITE));
                             ui.label(format!("Da: {}", invitation.inviter_username));
                             ui.horizontal(|ui| {
                                 if ui.button("✅ Accetta").clicked() {
