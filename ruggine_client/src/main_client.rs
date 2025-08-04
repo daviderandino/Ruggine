@@ -2,6 +2,7 @@ use eframe::egui::{self, Align, Frame, Layout, Margin, Rounding, Stroke, Vec2};
 use futures_util::{stream::StreamExt, SinkExt};
 use reqwest::{header, Client as HttpClient};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -19,7 +20,7 @@ struct User {
     username: String,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 struct Group {
     id: Uuid,
     name: String,
@@ -59,25 +60,27 @@ enum ToBackend {
     CreateGroup(String),
     JoinGroup(Group),
     LeaveGroup(Uuid),
-    InviteUser(String, String),
-    SendMessage(String),
+    InviteUser(Uuid, String),
+    SendMessage(Uuid, String),
     FetchInvitations,
     AcceptInvitation(Uuid),
     DeclineInvitation(Uuid),
+    FetchGroupMessages(Uuid),
 }
 
 #[derive(Debug)]
 enum FromBackend {
     LoggedIn(User, String, Vec<Group>),
     Registered,
-    GroupJoined(Group, Vec<WsServerMessage>),
-    GroupLeft,
-    NewMessage(WsServerMessage),
+    GroupJoined(Group),
+    GroupLeft(Uuid),
+    NewMessage(Uuid, WsServerMessage),
     Info(String),
     Error(String),
     InvitationsFetched(Vec<Invitation>),
     InvitationDeclined(Uuid),
     GroupCreated(Group),
+    GroupMessagesFetched(Uuid, Vec<WsServerMessage>),
 }
 
 #[derive(PartialEq)]
@@ -99,8 +102,9 @@ struct RuggineApp {
     auth_state: AuthState,
     current_user: Option<User>,
     auth_token: Option<String>,
-    current_group: Option<Group>,
-    messages: Vec<WsServerMessage>,
+    user_groups: Vec<Group>,
+    selected_group_id: Option<Uuid>,
+    messages: HashMap<Uuid, Vec<WsServerMessage>>,
     pending_invitations: Vec<Invitation>,
     last_invitation_fetch: Instant,
     to_backend_tx: Sender<ToBackend>,
@@ -123,7 +127,7 @@ impl RuggineApp {
         let egui_ctx = cc.egui_ctx.clone();
         runtime.spawn(async move {
             let mut client = HttpClient::new();
-            let mut ws_sender: Option<Sender<WsMessage>> = None;
+            let mut ws_senders: HashMap<Uuid, Sender<WsMessage>> = HashMap::new();
             let mut current_user: Option<User> = None;
             let mut current_token: Option<String> = None;
 
@@ -137,9 +141,17 @@ impl RuggineApp {
                         match handle_login(username, password).await {
                             Ok((from_backend_msg, authenticated_client)) => {
                                 client = authenticated_client;
-                                if let FromBackend::LoggedIn(ref user, ref token, _) = from_backend_msg {
+                                if let FromBackend::LoggedIn(ref user, ref token, ref groups) = from_backend_msg {
                                     current_user = Some(user.clone());
                                     current_token = Some(token.clone());
+                                    // Subscribe to all groups upon login
+                                    for group in groups {
+                                        if let Some(token) = &current_token {
+                                            if let Ok(ws_tx) = handle_join_group(group.clone(), token.clone(), from_backend_tx.clone()).await {
+                                                ws_senders.insert(group.id, ws_tx);
+                                            }
+                                        }
+                                    }
                                 }
                                 let _ = from_backend_tx.send(from_backend_msg).await;
                             }
@@ -151,9 +163,10 @@ impl RuggineApp {
                     ToBackend::CreateGroup(group_name) => {
                         match handle_create_group(&client, group_name).await {
                             Ok(group) => {
-                                if let (Some(user), Some(token)) = (&current_user, &current_token) {
-                                    let (ws_tx, _) = handle_join_group(&client, group.clone(), user.clone(), token.clone(), from_backend_tx.clone()).await;
-                                    ws_sender = ws_tx;
+                                if let Some(token) = &current_token {
+                                    if let Ok(ws_tx) = handle_join_group(group.clone(), token.clone(), from_backend_tx.clone()).await {
+                                        ws_senders.insert(group.id, ws_tx);
+                                    }
                                     let _ = from_backend_tx.send(FromBackend::GroupCreated(group)).await;
                                 }
                             }
@@ -163,26 +176,34 @@ impl RuggineApp {
                         }
                     }
                     ToBackend::JoinGroup(group) => {
-                        if let (Some(user), Some(token)) = (&current_user, &current_token) {
-                            let (ws_tx, join_res) = handle_join_group(&client, group, user.clone(), token.clone(), from_backend_tx.clone()).await;
-                            ws_sender = ws_tx;
-                            let _ = from_backend_tx.send(join_res).await;
+                         if let Some(token) = &current_token {
+                             match handle_join_group(group.clone(), token.clone(), from_backend_tx.clone()).await {
+                                Ok(ws_tx) => {
+                                    ws_senders.insert(group.id, ws_tx);
+                                    let _ = from_backend_tx.send(FromBackend::GroupJoined(group.clone())).await;
+                                    let _ = from_backend_tx.send(FromBackend::Info(format!("Entrato in '{}'", group.name))).await;
+                                }
+                                Err(e) => {
+                                    let _ = from_backend_tx.send(e).await;
+                                }
+                            }
                         }
                     }
                     ToBackend::LeaveGroup(group_id) => {
                         let res = handle_leave_group(&client, group_id).await;
-                        if let FromBackend::GroupLeft = res {
-                            // Disconnette dal websocket chiudendo il sender
-                            ws_sender = None;
+                        if let FromBackend::GroupLeft(id) = res {
+                            if let Some(sender) = ws_senders.remove(&id) {
+                                let _ = sender.send(WsMessage::Close(None)).await;
+                            }
                         }
                         let _ = from_backend_tx.send(res).await;
                     }
-                    ToBackend::InviteUser(group_name, username_to_invite) => {
-                        let res = handle_invite(&client, group_name, username_to_invite).await;
+                    ToBackend::InviteUser(group_id, username_to_invite) => {
+                        let res = handle_invite(&client, group_id, username_to_invite).await;
                         let _ = from_backend_tx.send(res).await;
                     }
-                    ToBackend::SendMessage(content) => {
-                        if let Some(sender) = &ws_sender {
+                    ToBackend::SendMessage(group_id, content) => {
+                        if let Some(sender) = ws_senders.get(&group_id) {
                             let msg = WsClientMessage { content };
                             let json_msg = serde_json::to_string(&msg).unwrap();
                             if sender.send(WsMessage::Text(json_msg)).await.is_err() {
@@ -195,21 +216,26 @@ impl RuggineApp {
                         let _ = from_backend_tx.send(res).await;
                     }
                     ToBackend::AcceptInvitation(id) => {
-                        if let (Some(user), Some(token)) = (&current_user, &current_token) {
-                             match handle_accept_invitation(&client, id).await {
-                                Ok(group) => {
-                                    let (ws_tx, join_res) = handle_join_group(&client, group, user.clone(), token.clone(), from_backend_tx.clone()).await;
-                                    ws_sender = ws_tx;
-                                    let _ = from_backend_tx.send(join_res).await;
+                         match handle_accept_invitation(&client, id).await {
+                            Ok(group) => {
+                                if let Some(token) = &current_token {
+                                    if let Ok(ws_tx) = handle_join_group(group.clone(), token.clone(), from_backend_tx.clone()).await {
+                                        ws_senders.insert(group.id, ws_tx);
+                                    }
+                                    let _ = from_backend_tx.send(FromBackend::GroupJoined(group)).await;
                                 }
-                                Err(e) => {
-                                    let _ = from_backend_tx.send(e).await;
-                                }
+                            }
+                            Err(e) => {
+                                let _ = from_backend_tx.send(e).await;
                             }
                         }
                     }
                     ToBackend::DeclineInvitation(id) => {
                         let res = handle_decline_invitation(&client, id).await;
+                        let _ = from_backend_tx.send(res).await;
+                    }
+                    ToBackend::FetchGroupMessages(group_id) => {
+                        let res = handle_fetch_group_messages(&client, group_id).await;
                         let _ = from_backend_tx.send(res).await;
                     }
                 }
@@ -228,8 +254,9 @@ impl RuggineApp {
             auth_state: AuthState::Login,
             current_user: None,
             auth_token: None,
-            current_group: None,
-            messages: Vec::new(),
+            user_groups: Vec::new(),
+            selected_group_id: None,
+            messages: HashMap::new(),
             pending_invitations: Vec::new(),
             last_invitation_fetch: Instant::now() - Duration::from_secs(60),
             to_backend_tx,
@@ -265,30 +292,44 @@ impl RuggineApp {
                 FromBackend::LoggedIn(user, token, groups) => {
                     self.current_user = Some(user);
                     self.auth_token = Some(token);
-                    if let Some(first_group) = groups.get(0).cloned() {
-                        self.to_backend_tx.try_send(ToBackend::JoinGroup(first_group)).ok();
+                    self.user_groups = groups.clone();
+                    if let Some(first_group) = groups.get(0) {
+                        self.selected_group_id = Some(first_group.id);
+                        self.to_backend_tx.try_send(ToBackend::FetchGroupMessages(first_group.id)).ok();
                     }
                 }
                 FromBackend::Registered => {
                     self.info_message = Some("Registrazione avvenuta! Ora puoi effettuare il login.".into());
                     self.auth_state = AuthState::Login;
                 }
-                FromBackend::GroupJoined(group, history) => {
+                FromBackend::GroupJoined(group) => {
                     self.info_message = Some(format!("Entrato in '{}'", group.name));
-                    self.current_group = Some(group);
-                    self.messages = history;
+                    self.selected_group_id = Some(group.id);
+                    // Rimuovi il gruppo se esiste già e aggiungi la nuova istanza per aggiornare
+                    self.user_groups.retain(|g| g.id != group.id);
+                    self.user_groups.push(group);
+                    self.to_backend_tx.try_send(ToBackend::FetchGroupMessages(self.selected_group_id.unwrap())).ok();
                 }
                 FromBackend::GroupCreated(group) => {
                     self.info_message = Some(format!("Gruppo '{}' creato.", group.name));
-                    self.current_group = Some(group);
-                    self.messages.clear();
+                    self.selected_group_id = Some(group.id);
+                    self.user_groups.push(group);
+                    self.messages.insert(self.selected_group_id.unwrap(), vec![]);
                 }
-                FromBackend::GroupLeft => {
-                    self.info_message = Some(format!("Hai lasciato il gruppo '{}'", self.current_group.as_ref().unwrap().name));
-                    self.current_group = None;
-                    self.messages.clear();
+                FromBackend::GroupLeft(group_id) => {
+                    self.info_message = Some(format!("Hai lasciato un gruppo."));
+                    self.user_groups.retain(|g| g.id != group_id);
+                    self.messages.remove(&group_id);
+                    if self.selected_group_id == Some(group_id) {
+                        self.selected_group_id = self.user_groups.get(0).map(|g| g.id);
+                        if let Some(id) = self.selected_group_id {
+                             self.to_backend_tx.try_send(ToBackend::FetchGroupMessages(id)).ok();
+                        }
+                    }
                 }
-                FromBackend::NewMessage(msg) => self.messages.push(msg),
+                FromBackend::NewMessage(group_id, msg) => {
+                    self.messages.entry(group_id).or_default().push(msg);
+                },
                 FromBackend::Error(err) => self.error_message = Some(err),
                 FromBackend::Info(info) => self.info_message = Some(info),
                 FromBackend::InvitationsFetched(invitations) => {
@@ -297,6 +338,9 @@ impl RuggineApp {
                 FromBackend::InvitationDeclined(id) => {
                     self.pending_invitations.retain(|inv| inv.id != id);
                     self.info_message = Some("Invito rifiutato.".into());
+                }
+                FromBackend::GroupMessagesFetched(group_id, history) => {
+                    self.messages.insert(group_id, history);
                 }
             }
         }
@@ -344,38 +388,46 @@ impl RuggineApp {
                 ui.add_space(10.0);
                 ui.heading(format!("Ciao, {}!", self.current_user.as_ref().unwrap().username));
                 ui.add_space(20.0);
-                
-                if let Some(group) = &self.current_group {
-                    ui.label("Gruppo Attuale:");
-                    ui.heading(format!("# {}", group.name));
-                    
-                    ui.add_space(10.0);
-                    if ui.button("❌ Esci dal Gruppo").clicked() {
-                        let _ = self.to_backend_tx.try_send(ToBackend::LeaveGroup(group.id));
-                    }
-                    ui.add_space(10.0);
 
-                    Frame::none().inner_margin(Margin::symmetric(10.0, 15.0)).show(ui, |ui| {
-                        ui.label(format!("Invita in '{}':", group.name));
-                        ui.text_edit_singleline(&mut self.invite_user_input);
-                        if ui.button("✉ Invita Utente").clicked() {
-                            if !self.invite_user_input.is_empty() {
-                                let _ = self.to_backend_tx.try_send(ToBackend::InviteUser(group.name.clone(), self.invite_user_input.clone()));
-                                self.invite_user_input.clear();
-                            }
-                        }
-                    });
-                }
-                
-                ui.separator();
-
+                // Sezione per la creazione di un nuovo gruppo
                 Frame::none().inner_margin(Margin::symmetric(10.0, 15.0)).show(ui, |ui| {
                     ui.label("Crea un nuovo Gruppo");
                     ui.text_edit_singleline(&mut self.create_group_input);
                     if ui.button("➕ Crea").clicked() {
                         if !self.create_group_input.is_empty() {
                            let _ = self.to_backend_tx.try_send(ToBackend::CreateGroup(self.create_group_input.clone()));
-                            self.create_group_input.clear();
+                           self.create_group_input.clear();
+                        }
+                    }
+                });
+
+                ui.separator();
+                
+                // Lista dei gruppi a cui l'utente appartiene
+                ui.heading("I Miei Gruppi");
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for group in self.user_groups.clone() {
+                        let is_selected = self.selected_group_id == Some(group.id);
+                        if ui.selectable_value(&mut self.selected_group_id, Some(group.id), format!("# {}", group.name)).clicked() {
+                            self.to_backend_tx.try_send(ToBackend::FetchGroupMessages(group.id)).ok();
+                        }
+                        if is_selected {
+                            ui.add_space(5.0);
+                            ui.horizontal(|ui| {
+                                ui.add_space(10.0);
+                                if ui.button("❌ Esci").clicked() {
+                                    let _ = self.to_backend_tx.try_send(ToBackend::LeaveGroup(group.id));
+                                }
+                                ui.add_space(10.0);
+                                ui.label("Invita:");
+                                ui.text_edit_singleline(&mut self.invite_user_input);
+                                if ui.button("✉ Invia Invito").clicked() {
+                                    if !self.invite_user_input.is_empty() {
+                                        self.to_backend_tx.try_send(ToBackend::InviteUser(group.id, self.invite_user_input.clone())).ok();
+                                        self.invite_user_input.clear();
+                                    }
+                                }
+                            });
                         }
                     }
                 });
@@ -386,28 +438,35 @@ impl RuggineApp {
             });
         });
 
-        if let Some(group) = &self.current_group {
-            egui::TopBottomPanel::bottom("chat_input_panel").resizable(false).min_height(40.0).show(ctx, |ui| {
-                ui.separator();
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    let text_edit_response = ui.add_sized(ui.available_size(), egui::TextEdit::singleline(&mut self.chat_message_input).hint_text(format!("Messaggio in #{}", group.name)).frame(false));
-                    if text_edit_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.chat_message_input.is_empty() {
-                        let _ = self.to_backend_tx.try_send(ToBackend::SendMessage(self.chat_message_input.clone()));
-                        self.chat_message_input.clear();
-                        text_edit_response.request_focus();
-                    }
-                });
-            });
-            egui::CentralPanel::default().show(ctx, |ui| {
-                ui.with_layout(Layout::top_down(Align::Center), |ui| { ui.heading(format!("# {}", group.name)); });
-                ui.separator();
-                egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false; 2]).show(ui, |ui| {
-                    ui.with_layout(Layout::top_down(Align::LEFT), |ui| {
-                        ui.add_space(10.0);
-                        for msg in &self.messages { self.draw_message_bubble(ui, msg); }
+        if let Some(selected_id) = self.selected_group_id {
+            let selected_group = self.user_groups.iter().find(|g| g.id == selected_id).cloned();
+            if let Some(group) = selected_group {
+                egui::TopBottomPanel::bottom("chat_input_panel").resizable(false).min_height(40.0).show(ctx, |ui| {
+                    ui.separator();
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        let text_edit_response = ui.add_sized(ui.available_size(), egui::TextEdit::singleline(&mut self.chat_message_input).hint_text(format!("Messaggio in #{}", group.name)).frame(false));
+                        if text_edit_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.chat_message_input.is_empty() {
+                            if let Some(group_id) = self.selected_group_id {
+                                let _ = self.to_backend_tx.try_send(ToBackend::SendMessage(group_id, self.chat_message_input.clone()));
+                            }
+                            self.chat_message_input.clear();
+                            text_edit_response.request_focus();
+                        }
                     });
                 });
-            });
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.with_layout(Layout::top_down(Align::Center), |ui| { ui.heading(format!("# {}", group.name)); });
+                    ui.separator();
+                    egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false; 2]).show(ui, |ui| {
+                        ui.with_layout(Layout::top_down(Align::LEFT), |ui| {
+                            ui.add_space(10.0);
+                            if let Some(messages) = self.messages.get(&selected_id) {
+                                for msg in messages { self.draw_message_bubble(ui, msg); }
+                            }
+                        });
+                    });
+                });
+            }
         } else {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.centered_and_justified(|ui| {
@@ -445,8 +504,6 @@ impl RuggineApp {
     }
 
     fn draw_message_bubble(&self, ui: &mut egui::Ui, msg: &WsServerMessage) {
-        // --- INIZIO MODIFICA ---
-        // Controlla se è un messaggio di sistema
         if msg.sender_id.is_nil() {
             ui.add_space(4.0);
             ui.with_layout(Layout::top_down(Align::Center), |ui| {
@@ -457,11 +514,9 @@ impl RuggineApp {
                 );
             });
             ui.add_space(4.0);
-            return; // Esci dalla funzione per non disegnare la bolla
+            return;
         }
-        // --- FINE MODIFICA ---
 
-        // Il codice seguente è per i messaggi normali degli utenti
         let is_my_message = self.current_user.as_ref().unwrap().id == msg.sender_id;
         let layout = if is_my_message { Layout::right_to_left(Align::TOP) } else { Layout::left_to_right(Align::TOP) };
         
@@ -594,7 +649,7 @@ async fn handle_create_group(client: &HttpClient, name: String) -> Result<Group,
 
 async fn handle_leave_group(client: &HttpClient, group_id: Uuid) -> FromBackend {
     match client.delete(format!("{}/groups/{}/leave", API_BASE_URL, group_id)).send().await {
-        Ok(res) if res.status().is_success() => FromBackend::GroupLeft,
+        Ok(res) if res.status().is_success() => FromBackend::GroupLeft(group_id),
         Ok(res) => FromBackend::Error(res.text().await.unwrap_or_else(|_| "Errore durante l'uscita dal gruppo.".into())),
         Err(_) => FromBackend::Error("Errore di connessione.".into()),
     }
@@ -602,21 +657,12 @@ async fn handle_leave_group(client: &HttpClient, group_id: Uuid) -> FromBackend 
 
 async fn handle_invite(
     client: &HttpClient,
-    group_name: String,
+    group_id: Uuid,
     username_to_invite: String,
 ) -> FromBackend {
     if username_to_invite.is_empty() {
         return FromBackend::Error("Devi specificare un utente da invitare.".into());
     }
-
-    let group = match client
-        .get(format!("{}/groups/by_name/{}", API_BASE_URL, group_name))
-        .send()
-        .await
-    {
-        Ok(res) if res.status().is_success() => res.json::<Group>().await.unwrap(),
-        _ => return FromBackend::Error(format!("Gruppo '{}' non trovato.", group_name)),
-    };
 
     let user_to_invite = match client
         .get(format!("{}/users/by_username/{}", API_BASE_URL, username_to_invite))
@@ -630,7 +676,7 @@ async fn handle_invite(
     let payload = serde_json::json!({ "user_to_invite_id": user_to_invite.id });
 
     match client
-        .post(format!("{}/groups/{}/invite", API_BASE_URL, group.id))
+        .post(format!("{}/groups/{}/invite", API_BASE_URL, group_id))
         .json(&payload)
         .send()
         .await
@@ -674,28 +720,30 @@ async fn handle_decline_invitation(client: &HttpClient, id: Uuid) -> FromBackend
     }
 }
 
+async fn handle_fetch_group_messages(client: &HttpClient, group_id: Uuid) -> FromBackend {
+    match client.get(format!("{}/groups/{}/messages", API_BASE_URL, group_id)).send().await {
+        Ok(res) if res.status().is_success() => {
+            match res.json::<Vec<WsServerMessage>>().await {
+                Ok(messages) => FromBackend::GroupMessagesFetched(group_id, messages),
+                Err(_) => FromBackend::Error("Errore nel decodificare la cronologia dei messaggi.".into()),
+            }
+        },
+        Ok(res) => FromBackend::Error(res.text().await.unwrap_or_default()),
+        Err(_) => FromBackend::Error("Errore di connessione per la cronologia dei messaggi.".into()),
+    }
+}
+
 async fn handle_join_group(
-    client: &HttpClient,
     group: Group,
-    _user: User,
     token: String,
     from_backend_tx: Sender<FromBackend>
-) -> (Option<Sender<WsMessage>>, FromBackend) {
+) -> Result<Sender<WsMessage>, FromBackend> {
     let ws_url = format!("ws://127.0.0.1:3000/groups/{}/chat?token={}", group.id, token);
     let ws_stream = match connect_async(&ws_url).await {
         Ok((stream, _)) => stream,
-        Err(e) => return (None, FromBackend::Error(format!("Impossibile connettersi alla chat: {}", e))),
+        Err(e) => return Err(FromBackend::Error(format!("Impossibile connettersi alla chat: {}", e))),
     };
-
-    let mut history = vec![];
-    if let Ok(res) = client.get(format!("{}/groups/{}/messages", API_BASE_URL, group.id)).send().await {
-        if res.status().is_success() {
-            if let Ok(h) = res.json::<Vec<WsServerMessage>>().await {
-                history = h;
-            }
-        }
-    }
-
+    
     let (mut write, mut read) = ws_stream.split();
     let (tx, mut rx) = mpsc::channel::<WsMessage>(32);
     tokio::spawn(async move { while let Some(msg) = rx.recv().await { if write.send(msg).await.is_err() { break; } } });
@@ -705,13 +753,13 @@ async fn handle_join_group(
         while let Some(Ok(msg)) = read.next().await {
             if let WsMessage::Text(text) = msg {
                 if let Ok(server_msg) = serde_json::from_str::<WsServerMessage>(&text) {
-                    if ui_tx.send(FromBackend::NewMessage(server_msg)).await.is_err() { break; }
+                    if ui_tx.send(FromBackend::NewMessage(group.id, server_msg)).await.is_err() { break; }
                 }
             }
         }
     });
     
-    (Some(tx), FromBackend::GroupJoined(group, history))
+    Ok(tx)
 }
 
 fn main() -> Result<(), eframe::Error> {
