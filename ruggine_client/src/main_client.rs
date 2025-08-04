@@ -128,7 +128,7 @@ impl RuggineApp {
         runtime.spawn(async move {
             let mut client = HttpClient::new();
             let mut ws_senders: HashMap<Uuid, Sender<WsMessage>> = HashMap::new();
-            let mut current_user: Option<User> = None;
+            let mut _current_user: Option<User> = None;
             let mut current_token: Option<String> = None;
 
             while let Some(action) = to_backend_rx.recv().await {
@@ -142,7 +142,7 @@ impl RuggineApp {
                             Ok((from_backend_msg, authenticated_client)) => {
                                 client = authenticated_client;
                                 if let FromBackend::LoggedIn(ref user, ref token, ref groups) = from_backend_msg {
-                                    current_user = Some(user.clone());
+                                    _current_user = Some(user.clone());
                                     current_token = Some(token.clone());
                                     // Subscribe to all groups upon login
                                     for group in groups {
@@ -405,31 +405,34 @@ impl RuggineApp {
                 
                 // Lista dei gruppi a cui l'utente appartiene
                 ui.heading("I Miei Gruppi");
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for group in self.user_groups.clone() {
-                        let is_selected = self.selected_group_id == Some(group.id);
-                        if ui.selectable_value(&mut self.selected_group_id, Some(group.id), format!("# {}", group.name)).clicked() {
-                            self.to_backend_tx.try_send(ToBackend::FetchGroupMessages(group.id)).ok();
-                        }
-                        if is_selected {
-                            ui.add_space(5.0);
-                            ui.horizontal(|ui| {
-                                ui.add_space(10.0);
-                                if ui.button("❌ Esci").clicked() {
-                                    let _ = self.to_backend_tx.try_send(ToBackend::LeaveGroup(group.id));
-                                }
-                                ui.add_space(10.0);
-                                ui.label("Invita:");
-                                ui.text_edit_singleline(&mut self.invite_user_input);
-                                if ui.button("✉ Invia Invito").clicked() {
-                                    if !self.invite_user_input.is_empty() {
-                                        self.to_backend_tx.try_send(ToBackend::InviteUser(group.id, self.invite_user_input.clone())).ok();
-                                        self.invite_user_input.clear();
+                // Modifica qui: usa `ui.push_id` per creare un contesto con ID univoco per lo ScrollArea
+                ui.push_id("my_groups_scroll_area", |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for group in self.user_groups.clone() {
+                            let is_selected = self.selected_group_id == Some(group.id);
+                            if ui.selectable_value(&mut self.selected_group_id, Some(group.id), format!("# {}", group.name)).clicked() {
+                                self.to_backend_tx.try_send(ToBackend::FetchGroupMessages(group.id)).ok();
+                            }
+                            if is_selected {
+                                ui.add_space(5.0);
+                                ui.horizontal(|ui| {
+                                    ui.add_space(10.0);
+                                    if ui.button("❌ Esci").clicked() {
+                                        let _ = self.to_backend_tx.try_send(ToBackend::LeaveGroup(group.id));
                                     }
-                                }
-                            });
+                                    ui.add_space(10.0);
+                                    ui.label("Invita:");
+                                    ui.text_edit_singleline(&mut self.invite_user_input);
+                                    if ui.button("✉ Invia Invito").clicked() {
+                                        if !self.invite_user_input.is_empty() {
+                                            self.to_backend_tx.try_send(ToBackend::InviteUser(group.id, self.invite_user_input.clone())).ok();
+                                            self.invite_user_input.clear();
+                                        }
+                                    }
+                                });
+                            }
                         }
-                    }
+                    });
                 });
                 
                 ui.separator();
@@ -483,22 +486,25 @@ impl RuggineApp {
         if self.pending_invitations.is_empty() {
             ui.label("Nessun invito.");
         } else {
-            egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
-                for invitation in self.pending_invitations.clone() {
-                    Frame::none().inner_margin(Margin::same(10.0)).fill(ui.style().visuals.widgets.noninteractive.bg_fill).rounding(Rounding::same(5.0)).show(ui, |ui| {
-                        ui.label(egui::RichText::new(&invitation.group_name).strong());
-                        ui.label(format!("Da: {}", invitation.inviter_username));
-                        ui.horizontal(|ui| {
-                            if ui.button("✅ Accetta").clicked() {
-                                self.to_backend_tx.try_send(ToBackend::AcceptInvitation(invitation.id)).ok();
-                            }
-                            if ui.button("❌ Rifiuta").clicked() {
-                                self.to_backend_tx.try_send(ToBackend::DeclineInvitation(invitation.id)).ok();
-                            }
+            // Modifica qui: usa `ui.push_id` per creare un contesto con ID univoco per lo ScrollArea
+            ui.push_id("invitations_scroll_area", |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
+                    for invitation in self.pending_invitations.clone() {
+                        Frame::none().inner_margin(Margin::same(10.0)).fill(ui.style().visuals.widgets.noninteractive.bg_fill).rounding(Rounding::same(5.0)).show(ui, |ui| {
+                            ui.label(egui::RichText::new(&invitation.group_name).strong());
+                            ui.label(format!("Da: {}", invitation.inviter_username));
+                            ui.horizontal(|ui| {
+                                if ui.button("✅ Accetta").clicked() {
+                                    self.to_backend_tx.try_send(ToBackend::AcceptInvitation(invitation.id)).ok();
+                                }
+                                if ui.button("❌ Rifiuta").clicked() {
+                                    self.to_backend_tx.try_send(ToBackend::DeclineInvitation(invitation.id)).ok();
+                                }
+                            });
                         });
-                    });
-                    ui.add_space(5.0);
-                }
+                        ui.add_space(5.0);
+                    }
+                });
             });
         }
     }
