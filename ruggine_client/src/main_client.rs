@@ -1,4 +1,4 @@
-use eframe::egui::{self, Align, Frame, Layout, Margin, Rounding, Stroke, Vec2};
+use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, Rounding, Stroke, Vec2};
 use futures_util::{stream::StreamExt, SinkExt};
 use reqwest::{header, Client as HttpClient};
 use serde::{Deserialize, Serialize};
@@ -555,35 +555,46 @@ impl RuggineApp {
     }
 }
 
-// --- Style ---
 fn configure_styles(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     let visuals = &mut style.visuals;
-    let bg_main = egui::Color32::from_rgb(48, 52, 70);
-    let bg_secondary = egui::Color32::from_rgb(69, 73, 94);
-    let fg_text = egui::Color32::from_rgb(198, 208, 228);
-    let accent_color = egui::Color32::from_rgb(136, 192, 208);
-    let widget_stroke = Stroke::new(1.0, egui::Color32::from_rgb(88, 91, 112));
+
+    // --- Oceanic Dark Palette ---
+    let bg_main      = Color32::from_rgb(26, 27, 38);       // Dark Blue
+    let bg_secondary = Color32::from_rgb(36, 40, 59);       // Lighter Blue/Gray
+    let bg_hover     = Color32::from_rgb(50, 56, 80);       // Hover Blue
+    let fg_text      = Color32::from_rgb(192, 202, 245);    // Light Lavender
+    let accent_color = Color32::from_rgb(42, 195, 222);     // Vibrant Cyan
+    let widget_stroke = Stroke::new(1.0, Color32::from_rgb(65, 72, 104));
+
     visuals.dark_mode = true;
     visuals.override_text_color = Some(fg_text);
     visuals.window_rounding = Rounding::same(8.0);
     visuals.window_fill = bg_main;
     visuals.window_stroke = Stroke::new(1.0, bg_secondary);
+
     visuals.widgets.noninteractive.bg_fill = bg_main;
     visuals.widgets.noninteractive.bg_stroke = widget_stroke;
     visuals.widgets.noninteractive.rounding = Rounding::same(4.0);
+
     visuals.widgets.inactive.bg_fill = bg_secondary;
     visuals.widgets.inactive.rounding = Rounding::same(4.0);
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(110, 115, 141);
+
+    visuals.widgets.hovered.bg_fill = bg_hover;
     visuals.widgets.hovered.rounding = Rounding::same(4.0);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, accent_color);
+
     visuals.widgets.active.bg_fill = accent_color;
     visuals.widgets.active.rounding = Rounding::same(4.0);
-    visuals.widgets.active.fg_stroke = Stroke::new(2.0, egui::Color32::WHITE);
-    visuals.selection.bg_fill = accent_color;
-    visuals.selection.stroke = Stroke::new(1.0, fg_text);
+    visuals.widgets.active.fg_stroke = Stroke::new(2.0, Color32::BLACK);
+
+    visuals.selection.bg_fill = accent_color.linear_multiply(0.4);
+    visuals.selection.stroke = Stroke::new(1.0, accent_color);
+
     style.spacing.button_padding = Vec2::new(10.0, 8.0);
     ctx.set_style(style);
 }
+
 
 // --- Network Logic ---
 async fn handle_register(client: &HttpClient, username: String, password: String) -> FromBackend {
