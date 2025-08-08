@@ -1,4 +1,3 @@
--- Add migration script here
 -- Abilita l'estensione per generare UUID
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
@@ -6,6 +5,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -34,9 +34,9 @@ CREATE TABLE group_invitations (
     UNIQUE(group_id, invited_user_id)
 );
 
--- Tabella per i messaggi
-CREATE TABLE messages (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+-- Tabella per i messaggi (usata come "group_messages" nel codice)
+CREATE TABLE group_messages (
+    user_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     content TEXT NOT NULL,
