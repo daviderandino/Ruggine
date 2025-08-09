@@ -9,6 +9,7 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use uuid::Uuid;
+use reqwest::StatusCode;
 
 const API_BASE_URL: &str = "http://127.0.0.1:3000";
 
@@ -57,6 +58,7 @@ struct LoginResponse {
 enum ToBackend {
     Register(String, String),
     Login(String, String),
+    Logout,
     CreateGroup(String),
     JoinGroup(Group),
     LeaveGroup(Uuid),
@@ -142,8 +144,15 @@ impl RuggineApp {
                             Ok((from_backend_msg, authenticated_client)) => {
                                 client = authenticated_client;
                                 if let FromBackend::LoggedIn(ref user, ref token, ref groups) = from_backend_msg {
+                                    
                                     _current_user = Some(user.clone());
                                     current_token = Some(token.clone());
+
+                                    // Chiudi le connessioni WebSocket precedenti
+                                    for (_, sender) in ws_senders.drain() {
+                                        let _ = sender.send(WsMessage::Close(None)).await;
+                                    }
+
                                     // Subscribe to all groups upon login
                                     for group in groups {
                                         if let Some(token) = &current_token {
@@ -159,6 +168,18 @@ impl RuggineApp {
                                 let _ = from_backend_tx.send(e).await;
                             }
                         }
+                    }
+                    ToBackend::Logout => {
+                       // Chiudi correttamente ogni WebSocket
+                        for (_, sender) in ws_senders.drain() {
+                            let _ = sender.send(WsMessage::Close(None)).await;
+                        }
+
+                        _current_user = None;
+                        current_token = None;
+                        client = HttpClient::new();
+
+                        let _ = from_backend_tx.send(FromBackend::Info("Logout effettuato.".into())).await;
                     }
                     ToBackend::CreateGroup(group_name) => {
                         match handle_create_group(&client, group_name).await {
@@ -386,7 +407,19 @@ impl RuggineApp {
         egui::SidePanel::left("side_panel").min_width(250.0).default_width(250.0).show(ctx, |ui| {
             ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
                 ui.add_space(10.0);
-                ui.heading(format!("Ciao, {}!", self.current_user.as_ref().unwrap().username));
+                ui.horizontal(|ui| {
+                    ui.heading(format!("Ciao, {}!", self.current_user.as_ref().unwrap().username));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("🚪 Logout").on_hover_text("Esci dall'account").clicked() {
+                            self.current_user = None;
+                            self.auth_token = None;
+                            self.user_groups.clear();
+                            self.selected_group_id = None;
+                            self.messages.clear();
+                            self.pending_invitations.clear();
+                        }
+                    });
+                });
                 ui.add_space(20.0);
 
                 // Sezione per la creazione di un nuovo gruppo
@@ -602,7 +635,19 @@ async fn handle_register(client: &HttpClient, username: String, password: String
     let payload = serde_json::json!({ "username": username, "password": password });
     match client.post(format!("{}/users/register", API_BASE_URL)).json(&payload).send().await {
         Ok(res) if res.status().is_success() => FromBackend::Registered,
-        Ok(res) => FromBackend::Error(res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into())),
+        Ok(res) => {
+            if res.status() == StatusCode::BAD_REQUEST {
+                return Err(FromBackend::Error("La password è troppo corta.".into()));
+            }
+            else if res.status() == StatusCode::CONFLICT {
+                return Err(FromBackend::Error("Nome utente già in uso.".into()));
+            }
+            else {
+                return Err(FromBackend::Error(
+                    res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
+                ));
+            }
+        }
         Err(_) => FromBackend::Error("Impossibile connettersi al server.".into()),
     }
 }
@@ -641,11 +686,19 @@ async fn handle_login(
                 authenticated_client,
             ))
         }
-        Ok(res) => Err(FromBackend::Error(
-            res.text()
-                .await
-                .unwrap_or_else(|_| "Username o password non validi".into()),
-        )),
+        Ok(res) => {
+            if res.status() == StatusCode::UNAUTHORIZED {
+                return Err(FromBackend::Error("Username e password errati.".into()));
+            }
+            else if res.status() == StatusCode::NOT_FOUND {
+                return Err(FromBackend::Error("Utente non trovato.".into()));
+            }
+            else {
+                return Err(FromBackend::Error(
+                    res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
+                ));
+            }
+        }
         Err(_) => Err(FromBackend::Error(
             "Impossibile connettersi al server.".into(),
         )),
@@ -702,9 +755,20 @@ async fn handle_invite(
             FromBackend::Info(format!("Invito inviato a {}.", username_to_invite))
         }
         Ok(res) => FromBackend::Error(
-            res.text()
-                .await
-                .unwrap_or_else(|_| "Errore durante l'invito.".into()),
+            if res.status() == StatusCode::FORBIDDEN {
+                return Err(FromBackend::Error("Errore, l'utente che invita non è membro del gruppo.".into()));
+            }
+            else if res.status() == StatusCode::NOT_FOUND {
+                return Err(FromBackend::Error("L'utente o il gruppo non esistono.".into()));
+            }
+            else if res.status() == StatusCode::CONFLICT {
+                return Err(FromBackend::Error("L'utente è già membro del gruppo.".into()));
+            }
+            else {
+                return Err(FromBackend::Error(
+                    res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
+                ));
+            }
         ),
         Err(_) => FromBackend::Error("Errore di connessione durante l'invito.".into()),
     }
@@ -724,7 +788,16 @@ async fn handle_fetch_invitations(client: &HttpClient) -> FromBackend {
 async fn handle_accept_invitation(client: &HttpClient, id: Uuid) -> Result<Group, FromBackend> {
     match client.post(format!("{}/invitations/{}/accept", API_BASE_URL, id)).send().await {
         Ok(res) if res.status().is_success() => res.json::<Group>().await.map_err(|_| FromBackend::Error("Errore decodifica gruppo.".into())),
-        Ok(res) => Err(FromBackend::Error(res.text().await.unwrap_or_default())),
+        Ok(res) => {
+            if res.status() == StatusCode::NOT_FOUND {
+                return Err(FromBackend::Error("Inviti non trovati.".into()));   
+            }
+            else {
+                return Err(FromBackend::Error(
+                    res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
+                ));
+            }
+        }
         Err(_) => Err(FromBackend::Error("Errore di connessione.".into())),
     }
 }
@@ -732,7 +805,16 @@ async fn handle_accept_invitation(client: &HttpClient, id: Uuid) -> Result<Group
 async fn handle_decline_invitation(client: &HttpClient, id: Uuid) -> FromBackend {
     match client.post(format!("{}/invitations/{}/decline", API_BASE_URL, id)).send().await {
         Ok(res) if res.status().is_success() => FromBackend::InvitationDeclined(id),
-        Ok(res) => FromBackend::Error(res.text().await.unwrap_or_default()),
+        Ok(res) => {
+            if res.status() == StatusCode::NOT_FOUND {
+                return Err(FromBackend::Error("Inviti non trovati.".into()));   
+            }
+            else {
+                return Err(FromBackend::Error(
+                    res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
+                ));
+            }
+        }
         Err(_) => FromBackend::Error("Errore di connessione.".into()),
     }
 }
@@ -745,7 +827,16 @@ async fn handle_fetch_group_messages(client: &HttpClient, group_id: Uuid) -> Fro
                 Err(_) => FromBackend::Error("Errore nel decodificare la cronologia dei messaggi.".into()),
             }
         },
-        Ok(res) => FromBackend::Error(res.text().await.unwrap_or_default()),
+        Ok(res) => {
+            if res.status() == StatusCode::FORBIDDEN {
+                return Err(FromBackend::Error("Accesso negato, l'utente non è membro del gruppo.".into()));
+            }
+            else {
+                return Err(FromBackend::Error(
+                    res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
+                ));
+            }
+        }
         Err(_) => FromBackend::Error("Errore di connessione per la cronologia dei messaggi.".into()),
     }
 }
