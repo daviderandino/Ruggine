@@ -637,15 +637,15 @@ async fn handle_register(client: &HttpClient, username: String, password: String
         Ok(res) if res.status().is_success() => FromBackend::Registered,
         Ok(res) => {
             if res.status() == StatusCode::BAD_REQUEST {
-                return Err(FromBackend::Error("La password è troppo corta.".into()));
+                return FromBackend::Error("La password è troppo corta.".into());
             }
             else if res.status() == StatusCode::CONFLICT {
-                return Err(FromBackend::Error("Nome utente già in uso.".into()));
+                return FromBackend::Error("Nome utente già in uso.".into());
             }
             else {
-                return Err(FromBackend::Error(
+                return FromBackend::Error(
                     res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
-                ));
+                );
             }
         }
         Err(_) => FromBackend::Error("Impossibile connettersi al server.".into()),
@@ -756,18 +756,18 @@ async fn handle_invite(
         }
         Ok(res) => FromBackend::Error(
             if res.status() == StatusCode::FORBIDDEN {
-                return Err(FromBackend::Error("Errore, l'utente che invita non è membro del gruppo.".into()));
+                return FromBackend::Error("Errore, l'utente che invita non è membro del gruppo.".into());
             }
             else if res.status() == StatusCode::NOT_FOUND {
-                return Err(FromBackend::Error("L'utente o il gruppo non esistono.".into()));
+                return FromBackend::Error("L'utente o il gruppo non esistono.".into());
             }
             else if res.status() == StatusCode::CONFLICT {
-                return Err(FromBackend::Error("L'utente è già membro del gruppo.".into()));
+                return FromBackend::Error("L'utente è già membro del gruppo.".into());
             }
             else {
-                return Err(FromBackend::Error(
+                return FromBackend::Error(
                     res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
-                ));
+                );
             }
         ),
         Err(_) => FromBackend::Error("Errore di connessione durante l'invito.".into()),
@@ -807,12 +807,12 @@ async fn handle_decline_invitation(client: &HttpClient, id: Uuid) -> FromBackend
         Ok(res) if res.status().is_success() => FromBackend::InvitationDeclined(id),
         Ok(res) => {
             if res.status() == StatusCode::NOT_FOUND {
-                return Err(FromBackend::Error("Inviti non trovati.".into()));   
+                return FromBackend::Error("Inviti non trovati.".into());   
             }
             else {
-                return Err(FromBackend::Error(
+                return FromBackend::Error(
                     res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
-                ));
+                );
             }
         }
         Err(_) => FromBackend::Error("Errore di connessione.".into()),
@@ -829,12 +829,12 @@ async fn handle_fetch_group_messages(client: &HttpClient, group_id: Uuid) -> Fro
         },
         Ok(res) => {
             if res.status() == StatusCode::FORBIDDEN {
-                return Err(FromBackend::Error("Accesso negato, l'utente non è membro del gruppo.".into()));
+                return FromBackend::Error("Accesso negato, l'utente non è membro del gruppo.".into());
             }
             else {
-                return Err(FromBackend::Error(
+                return FromBackend::Error(
                     res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
-                ));
+                );
             }
         }
         Err(_) => FromBackend::Error("Errore di connessione per la cronologia dei messaggi.".into()),

@@ -3,7 +3,7 @@ use axum::{
     Router,
 };
 use dashmap::DashMap;
-use sqlx::PgPool;
+use sqlx::{Pool, Sqlite};
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ pub type ChatState = Arc<DashMap<Uuid, broadcast::Sender<String>>>;
 
 #[derive(Clone)]
 pub struct AppState {
-    db_pool: PgPool,
+    db_pool: Pool<Sqlite>,
     chat_state: ChatState,
     jwt_secret: String,
 }
