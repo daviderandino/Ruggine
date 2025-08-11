@@ -192,7 +192,9 @@ impl RuggineApp {
                                     if let Ok(ws_tx) = handle_join_group(group.clone(), token.clone(), from_backend_tx.clone()).await {
                                         ws_senders.insert(group.id, ws_tx);
                                     }
-                                    let _ = from_backend_tx.send(FromBackend::GroupCreated(group)).await;
+                                    let _ = from_backend_tx.send(FromBackend::GroupCreated(group.clone())).await;
+                                    let users = handle_fetch_group_members(&client, group.id).await;
+                                    let _ = from_backend_tx.send(users).await;
                                 }
                             }
                             Err(e) => {
