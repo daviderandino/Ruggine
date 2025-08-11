@@ -346,6 +346,28 @@ pub async fn get_group_by_name(
         .ok_or(AppError::GroupNotFound)
 }
 
+pub async fn get_group_members(
+    State(app_state):State<AppState>,
+    Path(group_id): Path<Uuid>)
+ -> Result<Json<Vec<User>>,AppError>{
+    let users = sqlx::query_as!(
+            User,
+            r#"
+            SELECT 
+                u.id as "id!: uuid::Uuid",
+                 u.username, u.password_hash,
+                  u.created_at as "created_at!: sqlx::types::time::OffsetDateTime"
+            FROM users u
+            JOIN group_members gm ON u.id = gm.user_id
+            WHERE gm.group_id = ?
+            "#,
+            group_id
+        )
+        .fetch_all(&app_state.db_pool)
+        .await?;
+        Ok(Json(users))
+}
+
 pub async fn get_group_messages(
     claims: Claims,
     State(app_state): State<AppState>,
