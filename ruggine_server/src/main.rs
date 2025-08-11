@@ -3,7 +3,7 @@ use axum::{
     Router,
 };
 use dashmap::DashMap;
-use sqlx::PgPool;
+use sqlx::{Pool, Sqlite};
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ pub type ChatState = Arc<DashMap<Uuid, broadcast::Sender<String>>>;
 
 #[derive(Clone)]
 pub struct AppState {
-    db_pool: PgPool,
+    db_pool: Pool<Sqlite>,
     chat_state: ChatState,
     jwt_secret: String,
 }
@@ -52,7 +52,7 @@ async fn main() {
         chat_state,
         jwt_secret,
     };
-    
+
     let app = Router::new()
         .route("/users/register", post(handlers::register_user))
         .route("/users/login", post(handlers::login_user))
@@ -66,6 +66,7 @@ async fn main() {
             "/groups/:group_id/messages", // Rotta per la cronologia
             get(handlers::get_group_messages),
         )
+        .route("/groups/:group_id/members",get(handlers::get_group_members))
         .route(
             "/groups/:group_id/leave", // <-- AGGIUNGI QUESTA ROTTA
             delete(handlers::leave_group),

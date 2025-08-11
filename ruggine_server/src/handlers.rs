@@ -17,7 +17,7 @@ use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::{Duration, Utc};
 use futures_util::{stream::StreamExt, SinkExt};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
-use sqlx::PgPool;
+use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -35,7 +35,7 @@ pub async fn leave_group(
     let mut tx = app_state.db_pool.begin().await?;
 
     let result = sqlx::query!(
-        "DELETE FROM group_members WHERE user_id = $1 AND group_id = $2",
+        "DELETE FROM group_members WHERE user_id = ? AND group_id = ?",
         user_id,
         group_id
     )
@@ -47,7 +47,7 @@ pub async fn leave_group(
         return Ok(StatusCode::NO_CONTENT);
     }
 
-    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM group_members WHERE group_id = $1")
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM group_members WHERE group_id = ?")
         .bind(group_id)
         .fetch_one(&mut *tx)
         .await?;
@@ -70,7 +70,7 @@ pub async fn leave_group(
 
     // Se non ci sono più membri, ora che la notifica è stata inviata, possiamo pulire il gruppo
     if count.0 == 0 {
-        sqlx::query!("DELETE FROM groups WHERE id = $1", group_id)
+        sqlx::query!("DELETE FROM groups WHERE id = ?", group_id)
             .execute(&app_state.db_pool)
             .await?;
         tracing::info!("Gruppo {} eliminato perché non ha più membri.", group_id);
@@ -96,7 +96,7 @@ pub async fn register_user(
 
     sqlx::query_as!(
         User,
-        "INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id, username, password_hash, created_at",
+        "INSERT INTO users (username, password_hash) VALUES (?, ?) RETURNING id as \"id!: uuid::Uuid\", username, password_hash, created_at as \"created_at!: sqlx::types::time::OffsetDateTime\"",
         payload.username,
         password_hash
     )
@@ -119,7 +119,7 @@ pub async fn login_user(
 ) -> Result<Json<LoginResponse>, AppError> {
     let user = sqlx::query_as!(
         User,
-        "SELECT id, username, password_hash, created_at FROM users WHERE username = $1",
+        "SELECT id \"id!: uuid::Uuid\", username, password_hash, created_at as \"created_at!: sqlx::types::time::OffsetDateTime\" FROM users WHERE username = ?",
         payload.username
     )
     .fetch_optional(&app_state.db_pool)
@@ -133,10 +133,10 @@ pub async fn login_user(
     let user_groups = sqlx::query_as!(
         Group,
         r#"
-        SELECT g.id, g.name, g.created_at
+        SELECT g.id as "id!: uuid::Uuid", g.name, g.created_at as "created_at!: sqlx::types::time::OffsetDateTime"
         FROM groups g
         JOIN group_members gm ON g.id = gm.group_id
-        WHERE gm.user_id = $1
+        WHERE gm.user_id = ?
         ORDER BY g.created_at ASC
         "#,
         user.id
@@ -171,7 +171,7 @@ pub async fn get_user_by_username(
 ) -> Result<Json<User>, AppError> {
     sqlx::query_as!(
         User,
-        "SELECT id, username, password_hash, created_at FROM users WHERE username = $1",
+        "SELECT id \"id!: uuid::Uuid\", username, password_hash, created_at as \"created_at!: sqlx::types::time::OffsetDateTime\" FROM users WHERE username = ?",
         username
     )
     .fetch_optional(&app_state.db_pool)
@@ -190,12 +190,17 @@ pub async fn create_group(
     let creator_id = claims.sub;
     let mut tx = app_state.db_pool.begin().await?;
 
-    let new_group = sqlx::query_as!(Group, "INSERT INTO groups (name) VALUES ($1) RETURNING *", payload.name)
+    let new_group = sqlx::query_as!(Group, "INSERT INTO groups (name) VALUES (?) RETURNING
+            id          AS \"id!: uuid::Uuid\",
+            name,
+            created_at  AS \"created_at!: sqlx::types::time::OffsetDateTime\"
+        ",
+        payload.name)
         .fetch_one(&mut *tx)
         .await?;
 
     sqlx::query!(
-        "INSERT INTO group_members (user_id, group_id) VALUES ($1, $2)",
+        "INSERT INTO group_members (user_id, group_id) VALUES (?, ?)",
         creator_id,
         new_group.id
     )
@@ -220,7 +225,7 @@ pub async fn invite_to_group(
     
     let mut tx = app_state.db_pool.begin().await?;
 
-    let is_inviter_a_member: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM group_members WHERE user_id = $1 AND group_id = $2)")
+    let is_inviter_a_member: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM group_members WHERE user_id = ? AND group_id = ?)")
         .bind(inviter_id)
         .bind(group_id)
         .fetch_one(&mut *tx).await?;
@@ -228,8 +233,8 @@ pub async fn invite_to_group(
     if !is_inviter_a_member.0 {
         return Err(AppError::MissingPermissions);
     }
-    
-    let is_already_member: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM group_members WHERE user_id = $1 AND group_id = $2)")
+
+    let is_already_member: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM group_members WHERE user_id = ? AND group_id = ?)")
         .bind(payload.user_to_invite_id).bind(group_id)
         .fetch_one(&mut *tx).await?;
 
@@ -238,7 +243,7 @@ pub async fn invite_to_group(
     }
 
     let result = sqlx::query!(
-        "INSERT INTO group_invitations (group_id, inviter_id, invited_user_id, status) VALUES ($1, $2, $3, 'pending')",
+        "INSERT INTO group_invitations (group_id, inviter_id, invited_user_id, status) VALUES (?, ?, ?, 'pending')",
         group_id, inviter_id, payload.user_to_invite_id
     )
     .execute(&mut *tx).await;
@@ -265,11 +270,11 @@ pub async fn get_pending_invitations(
     sqlx::query_as!(
         Invitation,
         r#"
-        SELECT gi.id, g.id as "group_id", g.name as "group_name", u.username as "inviter_username"
+        SELECT gi.id as "id!: uuid::Uuid", g.id as "group_id!: uuid::Uuid", g.name as "group_name", u.username as "inviter_username"
         FROM group_invitations gi
         JOIN groups g ON gi.group_id = g.id
         JOIN users u ON gi.inviter_id = u.id
-        WHERE gi.invited_user_id = $1 AND gi.status = 'pending'
+        WHERE gi.invited_user_id = ? AND gi.status = 'pending'
         "#,
         claims.sub
     )
@@ -288,21 +293,21 @@ pub async fn accept_invitation(
     let mut tx = app_state.db_pool.begin().await?;
 
     let invitation = sqlx::query!(
-        "SELECT group_id FROM group_invitations WHERE id = $1 AND invited_user_id = $2 AND status = 'pending'",
+        "SELECT group_id as \"group_id!: uuid::Uuid\" FROM group_invitations WHERE id = ? AND invited_user_id = ? AND status = 'pending'",
         invitation_id, user_id
     )
     .fetch_optional(&mut *tx).await?
     .ok_or(AppError::InvitationNotFound)?;
 
-    sqlx::query!("UPDATE group_invitations SET status = 'accepted' WHERE id = $1", invitation_id)
+    sqlx::query!("UPDATE group_invitations SET status = 'accepted' WHERE id = ?", invitation_id)
         .execute(&mut *tx)
         .await?;
 
-    sqlx::query!("INSERT INTO group_members (user_id, group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", user_id, invitation.group_id)
+    sqlx::query!("INSERT INTO group_members (user_id, group_id) VALUES (?, ?) ON CONFLICT DO NOTHING", user_id, invitation.group_id)
         .execute(&mut *tx)
         .await?;
 
-    let group = sqlx::query_as!(Group, "SELECT * FROM groups WHERE id = $1", invitation.group_id)
+    let group = sqlx::query_as!(Group, "SELECT id as \"id!: uuid::Uuid\", name, created_at as \"created_at!: sqlx::types::time::OffsetDateTime\" FROM groups WHERE id = ?", invitation.group_id)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -316,7 +321,7 @@ pub async fn decline_invitation(
     Path(invitation_id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
     let result = sqlx::query!(
-        "UPDATE group_invitations SET status = 'declined' WHERE id = $1 AND invited_user_id = $2 AND status = 'pending'",
+        "UPDATE group_invitations SET status = 'declined' WHERE id = ? AND invited_user_id = ? AND status = 'pending'",
         invitation_id, claims.sub
     )
     .execute(&app_state.db_pool).await?;
@@ -334,11 +339,33 @@ pub async fn get_group_by_name(
     State(app_state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<Group>, AppError> {
-    sqlx::query_as!(Group, "SELECT * FROM groups WHERE name = $1", name)
+    sqlx::query_as!(Group, "SELECT id as \"id!: uuid::Uuid\", name, created_at as \"created_at!: sqlx::types::time::OffsetDateTime\" FROM groups WHERE name = ?", name)
         .fetch_optional(&app_state.db_pool)
         .await?
         .map(Json)
         .ok_or(AppError::GroupNotFound)
+}
+
+pub async fn get_group_members(
+    State(app_state):State<AppState>,
+    Path(group_id): Path<Uuid>)
+ -> Result<Json<Vec<User>>,AppError>{
+    let users = sqlx::query_as!(
+            User,
+            r#"
+            SELECT 
+                u.id as "id!: uuid::Uuid",
+                 u.username, u.password_hash,
+                  u.created_at as "created_at!: sqlx::types::time::OffsetDateTime"
+            FROM users u
+            JOIN group_members gm ON u.id = gm.user_id
+            WHERE gm.group_id = ?
+            "#,
+            group_id
+        )
+        .fetch_all(&app_state.db_pool)
+        .await?;
+        Ok(Json(users))
 }
 
 pub async fn get_group_messages(
@@ -347,7 +374,7 @@ pub async fn get_group_messages(
     Path(group_id): Path<Uuid>,
 ) -> Result<Json<Vec<WsServerMessage>>, AppError> {
     let is_member: (bool,) = sqlx::query_as(
-        "SELECT EXISTS(SELECT 1 FROM group_members WHERE user_id = $1 AND group_id = $2)"
+        "SELECT EXISTS(SELECT 1 FROM group_members WHERE user_id = ? AND group_id = ?)"
     )
     .bind(claims.sub)
     .bind(group_id)
@@ -365,12 +392,12 @@ pub async fn get_group_messages(
         WsServerMessage,
         r#"
         SELECT
-            m.user_id as "sender_id",
+            m.user_id as "sender_id!: uuid::Uuid",
             u.username as "sender_username",
             m.content
         FROM group_messages m
         JOIN users u ON m.user_id = u.id
-        WHERE m.group_id = $1
+        WHERE m.group_id = ?
         ORDER BY m.created_at DESC
         LIMIT 100
         "#,
@@ -412,11 +439,11 @@ pub async fn chat_handler(
     })
 }
 
-async fn handle_socket(socket: WebSocket, db_pool: PgPool, chat_state: ChatState, group_id: Uuid, user_id: Uuid) {
+async fn handle_socket(socket: WebSocket, db_pool: Pool<Sqlite>, chat_state: ChatState, group_id: Uuid, user_id: Uuid) {
     let tx = chat_state.entry(group_id).or_insert_with(|| broadcast::channel(100).0).clone();
     let mut rx = tx.subscribe();
 
-    let username = sqlx::query_scalar!("SELECT username FROM users WHERE id = $1", user_id)
+    let username = sqlx::query_scalar!("SELECT username FROM users WHERE id = ?", user_id)
         .fetch_one(&db_pool).await.unwrap_or_else(|_| "Sconosciuto".to_string());
 
     let (mut sender, mut receiver) = socket.split();
@@ -432,7 +459,7 @@ async fn handle_socket(socket: WebSocket, db_pool: PgPool, chat_state: ChatState
             };
             
             if let Err(e) = sqlx::query!(
-                "INSERT INTO group_messages (group_id, user_id, content) VALUES ($1, $2, $3)",
+                "INSERT INTO group_messages (group_id, user_id, content) VALUES (?, ?, ?)",
                 group_id, user_id, msg.content
             )
             .execute(&recv_db_pool)
