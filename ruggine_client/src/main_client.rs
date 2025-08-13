@@ -320,7 +320,6 @@ impl eframe::App for RuggineApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         //Modifico stato di Ruggine APP
         self.handle_backend_messages();
-
         // Ridisegno la UI
         if self.current_user.is_some() {
             if self.last_invitation_fetch.elapsed() > Duration::from_secs(5) {

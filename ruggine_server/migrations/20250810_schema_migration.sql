@@ -87,7 +87,7 @@ CREATE TABLE group_messages (
     DEFAULT (randomblob(16)),
 
     group_id   TEXT NOT NULL,
-    user_id  TEXT, -- Possibilmente null per i messaggi di sistema
+    user_id  TEXT NOT NULL,
     content    TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     FOREIGN KEY (group_id)  REFERENCES groups(id) ON DELETE CASCADE,
@@ -96,6 +96,7 @@ CREATE TABLE group_messages (
 
 CREATE INDEX IF NOT EXISTS idx_group_messages_group_time ON group_messages(group_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_group_messages_user       ON group_messages(user_id);
+INSERT INTO users (id, username, password_hash) VALUES (x'00000000000000000000000000000000', 'system', '0');
 
 -- =========================================================
 -- ✅ Test rapido (opzionale): decommenta per provare

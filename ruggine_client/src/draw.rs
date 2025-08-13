@@ -244,7 +244,7 @@ impl RuggineApp{
     }
 
     pub fn draw_message_bubble(&self, ui: &mut egui::Ui, msg: &WsServerMessage) {
-        if msg.sender_id == Uuid::from_u128(0) {
+        if msg.sender_username == "system" {
             ui.add_space(4.0);
             ui.with_layout(Layout::top_down(Align::Center), |ui| {
                 ui.label(

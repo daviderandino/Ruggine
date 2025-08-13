@@ -1,5 +1,4 @@
 - Fixare formato errori
-Alcuni sono in formato {"error": "..."}, altri leggibili
  -> sono necessari errori al momento della creazione del gruppo? Sappiamo che il nome può anche avere duplicati, ma ci può essere qualche Bad Request (400)?
  -> sono necessari errori al momento dell'uscita dal gruppo? (403 se non è membro)
  -> dobbiamo aggiungere un fetch_groups?

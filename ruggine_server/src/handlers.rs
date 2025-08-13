@@ -53,21 +53,32 @@ pub async fn leave_group(
         .bind(group_id)
         .fetch_one(&mut *tx)
         .await?;
-    
-    // Impegnamo la transazione prima di inviare il messaggio broadcast
-    tx.commit().await?;
-
+     // Impegnamo la transazione prima di inviare il messaggio broadcast
 
     // Invia un messaggio di notifica alla chat del gruppo
     if let Some(tx) = app_state.chat_state.get(&group_id) {
         let system_message = WsServerMessage {
-            sender_id: Uuid::from_u128(0), // ID speciale per i messaggi di sistema
+            sender_id: Uuid::nil(), // ID speciale per i messaggi di sistema
             sender_username: "system".to_string(), // Non mostrato, ma utile per debug
             content: format!("{} ha lasciato il gruppo.", username),
         };
         // Invia il messaggio, ignorando l'errore se non ci sono più iscritti
         let _ = tx.send(serde_json::to_string(&system_message).unwrap());
     }
+    let leave_message = format!("{} ha lasciato il gruppo", username);
+    let system_user_id = Uuid::from_u128(0);
+    sqlx::query!(
+        r#"
+        INSERT INTO group_messages (user_id, group_id, content)
+        VALUES (?, ?, ?)
+        "#,
+        system_user_id,          
+        group_id,
+        leave_message
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
 
 
     // Se non ci sono più membri, ora che la notifica è stata inviata, possiamo pulire il gruppo
@@ -317,20 +328,36 @@ pub async fn accept_invitation(
 
     sqlx::query!("INSERT INTO group_members (user_id, group_id) VALUES (?, ?) ON CONFLICT DO NOTHING", user_id, invitation.group_id)
         .execute(&mut *tx)
-        .await?;
+        .await?;    
 
     let group = sqlx::query_as!(Group, "SELECT id as \"id!: uuid::Uuid\", name, created_at as \"created_at!: sqlx::types::time::OffsetDateTime\" FROM groups WHERE id = ?", invitation.group_id)
         .fetch_one(&mut *tx)
         .await?;
         if let Some(tx) = app_state.chat_state.get(&group.id) {
         let system_message = WsServerMessage {
-            sender_id: Uuid::from_u128(0), // ID speciale per i messaggi di sistema
+            sender_id: Uuid::nil(), // ID speciale per i messaggi di sistema
             sender_username: "system".to_string(), // Non mostrato, ma utile per debug
             content: format!("{} si é unito al gruppo.", claims.username),
         };
         // Invia il messaggio, ignorando l'errore se non ci sono più iscritti
         let _ = tx.send(serde_json::to_string(&system_message).unwrap());
     }
+    tx.commit().await?;
+
+    let mut tx = app_state.db_pool.begin().await?;
+    let join_message = format!("{} si é unito al gruppo.", claims.username);
+    let system_user_id = Uuid::from_u128(0);
+    sqlx::query!(
+        r#"
+        INSERT INTO group_messages (user_id, group_id, content)
+        VALUES (?, ?, ?)
+        "#,
+        system_user_id,          
+        invitation.group_id,
+        join_message
+    )
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(Json(group))
 }
