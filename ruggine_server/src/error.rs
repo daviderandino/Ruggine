@@ -30,23 +30,24 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, error_message) = match self {
-            AppError::DatabaseError(e) => {
-                tracing::error!("Database error: {:?}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, "An internal server error occurred".to_string())
-            }
-            AppError::JwtError(_) => (StatusCode::UNAUTHORIZED, "Invalid authentication token".to_string()),
-            AppError::PasswordHashError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to process request".to_string()),
-            AppError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::WrongCredentials => (StatusCode::UNAUTHORIZED, "Invalid username or password".to_string()),
-            AppError::UsernameExists => (StatusCode::CONFLICT, "Username already exists".to_string()),
-            AppError::UserNotFound => (StatusCode::NOT_FOUND, "User not found".to_string()),
-            AppError::GroupNotFound => (StatusCode::NOT_FOUND, "Group not found".to_string()),
-            AppError::UserOrGroupNotFound => (StatusCode::NOT_FOUND, "The specified user or group does not exist".to_string()),
-            AppError::InvitationNotFound => (StatusCode::NOT_FOUND, "Invitation not found or has already been handled".to_string()),
-            AppError::InvitationAlreadyExists => (StatusCode::CONFLICT, "An invitation for this user to this group already exists".to_string()),
-            AppError::UserAlreadyInGroup => (StatusCode::CONFLICT, "User is already a member of this group".to_string()),
-            AppError::MissingPermissions => (StatusCode::FORBIDDEN, "You do not have permission to perform this action".to_string()),
-            AppError::CannotInviteSelf => (StatusCode::BAD_REQUEST, "You cannot invite yourself to a group".to_string()),
+        AppError::DatabaseError(e) => { 
+            tracing::error!("Errore del database: {:?}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Si è verificato un errore interno del server".to_string())
+        }
+        AppError::JwtError(_) => (StatusCode::UNAUTHORIZED, "Token di autenticazione non valido".to_string()),
+        AppError::PasswordHashError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Impossibile elaborare la richiesta".to_string()),
+        AppError::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg),
+        AppError::WrongCredentials => (StatusCode::UNAUTHORIZED, "Nome utente o password non validi".to_string()),
+        AppError::UsernameExists => (StatusCode::CONFLICT, "Il nome utente esiste già".to_string()),
+        AppError::UserNotFound => (StatusCode::NOT_FOUND, "Utente non trovato".to_string()),
+        AppError::GroupNotFound => (StatusCode::NOT_FOUND, "Gruppo non trovato".to_string()),
+        AppError::UserOrGroupNotFound => (StatusCode::NOT_FOUND, "L'utente o il gruppo specificato non esiste".to_string()),
+        AppError::InvitationNotFound => (StatusCode::NOT_FOUND, "Invito non trovato o già gestito".to_string()),
+        AppError::InvitationAlreadyExists => (StatusCode::CONFLICT, "Esiste già un invito per questo utente in questo gruppo".to_string()),
+        AppError::UserAlreadyInGroup => (StatusCode::CONFLICT, "L'utente è già un membro di questo gruppo".to_string()),
+        AppError::MissingPermissions => (StatusCode::FORBIDDEN, "Non hai il permesso per eseguire questa azione".to_string()),
+        AppError::CannotInviteSelf => (StatusCode::BAD_REQUEST, "Non puoi invitare te stesso in un gruppo".to_string()),
+
         };
 
         let body = Json(json!({ "error": error_message }));

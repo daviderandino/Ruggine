@@ -17,8 +17,10 @@ use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::{Duration, Utc};
 use futures_util::{stream::StreamExt, SinkExt};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
-use sqlx::{Pool, Sqlite};
+use sqlx::{Execute, Pool, Sqlite};
+use tracing::Instrument;
 use std::collections::HashMap;
+use std::ptr::null;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -55,18 +57,18 @@ pub async fn leave_group(
     // Impegnamo la transazione prima di inviare il messaggio broadcast
     tx.commit().await?;
 
-    // --- INIZIO MODIFICA ---
+
     // Invia un messaggio di notifica alla chat del gruppo
     if let Some(tx) = app_state.chat_state.get(&group_id) {
         let system_message = WsServerMessage {
-            sender_id: Uuid::nil(), // ID speciale per i messaggi di sistema
+            sender_id: Uuid::from_u128(0), // ID speciale per i messaggi di sistema
             sender_username: "system".to_string(), // Non mostrato, ma utile per debug
             content: format!("{} ha lasciato il gruppo.", username),
         };
         // Invia il messaggio, ignorando l'errore se non ci sono più iscritti
         let _ = tx.send(serde_json::to_string(&system_message).unwrap());
     }
-    // --- FINE MODIFICA ---
+
 
     // Se non ci sono più membri, ora che la notifica è stata inviata, possiamo pulire il gruppo
     if count.0 == 0 {
@@ -233,13 +235,24 @@ pub async fn invite_to_group(
     if !is_inviter_a_member.0 {
         return Err(AppError::MissingPermissions);
     }
-
-    let is_already_member: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM group_members WHERE user_id = ? AND group_id = ?)")
-        .bind(payload.user_to_invite_id).bind(group_id)
-        .fetch_one(&mut *tx).await?;
-
-    if is_already_member.0 {
+    //Check if it's a member
+    let member = sqlx::query!(
+        "SELECT user_id as \"user_id!: uuid::Uuid\" FROM group_members WHERE user_id = ? AND group_id = ? ",
+        payload.user_to_invite_id, group_id
+    )
+    .fetch_optional(&mut *tx).await?;
+    
+    if member.is_some(){
         return Err(AppError::UserAlreadyInGroup);
+    }
+    
+    //Check for pending requests
+    let is_pending_inv =  sqlx::query!(
+        "SELECT group_id FROM group_invitations WHERE invited_user_id = ? AND group_id = ? AND status = 'pending'",
+        payload.user_to_invite_id, group_id
+    ).fetch_optional(&mut *tx).await;
+    if is_pending_inv.is_err(){
+        return Err(AppError::InvitationAlreadyExists); 
     }
 
     let result = sqlx::query!(
@@ -291,7 +304,6 @@ pub async fn accept_invitation(
 ) -> Result<Json<Group>, AppError> {
     let user_id = claims.sub;
     let mut tx = app_state.db_pool.begin().await?;
-
     let invitation = sqlx::query!(
         "SELECT group_id as \"group_id!: uuid::Uuid\" FROM group_invitations WHERE id = ? AND invited_user_id = ? AND status = 'pending'",
         invitation_id, user_id
@@ -310,7 +322,15 @@ pub async fn accept_invitation(
     let group = sqlx::query_as!(Group, "SELECT id as \"id!: uuid::Uuid\", name, created_at as \"created_at!: sqlx::types::time::OffsetDateTime\" FROM groups WHERE id = ?", invitation.group_id)
         .fetch_one(&mut *tx)
         .await?;
-
+        if let Some(tx) = app_state.chat_state.get(&group.id) {
+        let system_message = WsServerMessage {
+            sender_id: Uuid::from_u128(0), // ID speciale per i messaggi di sistema
+            sender_username: "system".to_string(), // Non mostrato, ma utile per debug
+            content: format!("{} si é unito al gruppo.", claims.username),
+        };
+        // Invia il messaggio, ignorando l'errore se non ci sono più iscritti
+        let _ = tx.send(serde_json::to_string(&system_message).unwrap());
+    }
     tx.commit().await?;
     Ok(Json(group))
 }

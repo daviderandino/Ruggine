@@ -17,11 +17,11 @@ const REFRESH_RATE:u64 = 50; //ms
 
 // Dichiarazione moduli
 mod draw;
-mod handlers;
-pub mod models;
+mod handlers_client;
+pub mod models_client;
 use crate::draw::*;
-use crate::handlers::*;
-use crate::models::*;
+use crate::handlers_client::*;
+use crate::models_client::*;
 
 // --- Application State ---
 struct RuggineApp {
@@ -231,7 +231,7 @@ fn new(cc: &eframe::CreationContext<'_>) -> Self {
         selected_group_members:None,
         messages: HashMap::new(),
         pending_invitations: Vec::new(),
-        last_invitation_fetch: Instant::now() - Duration::from_secs(60),
+        last_invitation_fetch: Instant::now(),
         to_backend_tx,
         from_backend_rx,
         _runtime: runtime,
@@ -244,65 +244,71 @@ fn new(cc: &eframe::CreationContext<'_>) -> Self {
         self.info_message = None;
         match msg {
             FromBackend::LoggedIn(user, token, groups) => {
-                            self.current_user = Some(user);
-                            self.auth_token = Some(token);
-                            self.user_groups = groups.clone();
-                            if let Some(first_group) = groups.get(0) {
-                                self.selected_group_id = Some(first_group.id);
-                                self.to_backend_tx.try_send(ToBackend::FetchGroupMessages(first_group.id)).ok();
-                                self.to_backend_tx.try_send(ToBackend::FetchGroupMembers(first_group.id)).ok();
+                                    self.current_user = Some(user);
+                                    self.auth_token = Some(token);
+                                    self.user_groups = groups.clone();
+                                    if let Some(first_group) = groups.get(0) {
+                                        self.selected_group_id = Some(first_group.id);
+                                        self.to_backend_tx.try_send(ToBackend::FetchGroupMessages(first_group.id)).ok();
+                                        self.to_backend_tx.try_send(ToBackend::FetchGroupMembers(first_group.id)).ok();
 
-                            }
-                        }
+                                    }
+                                }
             FromBackend::Registered => {
-                            self.info_message = Some("Registrazione avvenuta! Ora puoi effettuare il login.".into());
-                            self.auth_state = AuthState::Login;
-                        }
+                                    self.info_message = Some("Registrazione avvenuta! Ora puoi effettuare il login.".into());
+                                    self.auth_state = AuthState::Login;
+                                }
             FromBackend::GroupJoined(group) => {
-                            self.info_message = Some(format!("Entrato in '{}'", group.name));
-                            self.selected_group_id = Some(group.id);
-                            // Rimuovi il gruppo se esiste già e aggiungi la nuova istanza per aggiornare
-                            self.user_groups.retain(|g| g.id != group.id);
-                            self.user_groups.push(group);
-                            self.to_backend_tx.try_send(ToBackend::FetchGroupMessages(self.selected_group_id.unwrap())).ok();
-                            self.to_backend_tx.try_send(ToBackend::FetchGroupMembers(self.selected_group_id.unwrap())).ok();
-
-                        }
-            FromBackend::GroupCreated(group) => {
-                            self.info_message = Some(format!("Gruppo '{}' creato.", group.name));
-                            self.selected_group_id = Some(group.id);
-                            self.user_groups.push(group);
-                            self.messages.insert(self.selected_group_id.unwrap(), vec![]);
-                        }
-            FromBackend::GroupLeft(group_id) => {
-                            self.info_message = Some(format!("Hai lasciato un gruppo."));
-                            self.user_groups.retain(|g| g.id != group_id);
-                            self.messages.remove(&group_id);
-                            if self.selected_group_id == Some(group_id) {
-                                self.selected_group_id = self.user_groups.get(0).map(|g| g.id);
-                                if let Some(id) = self.selected_group_id {
-                                        self.to_backend_tx.try_send(ToBackend::FetchGroupMessages(id)).ok();
-                                        self.to_backend_tx.try_send(ToBackend::FetchGroupMembers(id)).ok();
+                                    self.info_message = Some(format!("Entrato in '{}'", group.name));
+                                    self.selected_group_id = Some(group.id);
+                                    // Rimuovi il gruppo se esiste già e aggiungi la nuova istanza per aggiornare
+                                    self.user_groups.retain(|g| g.id != group.id);
+                                    self.user_groups.push(group);
+                                    self.to_backend_tx.try_send(ToBackend::FetchGroupMessages(self.selected_group_id.unwrap())).ok();
+                                    self.to_backend_tx.try_send(ToBackend::FetchGroupMembers(self.selected_group_id.unwrap())).ok();
 
                                 }
-                            }
-                        }
+            FromBackend::GroupCreated(group) => {
+                                    self.info_message = Some(format!("Gruppo '{}' creato.", group.name));
+                                    self.selected_group_id = Some(group.id);
+                                    self.user_groups.push(group);
+                                    self.messages.insert(self.selected_group_id.unwrap(), vec![]);
+                                }
+            FromBackend::GroupLeft(group_id) => {
+                                    self.info_message = Some(format!("Hai lasciato un gruppo."));
+                                    self.user_groups.retain(|g| g.id != group_id);
+                                    self.messages.remove(&group_id);
+                                    if self.selected_group_id == Some(group_id) {
+                                        self.selected_group_id = self.user_groups.get(0).map(|g| g.id);
+                                        if let Some(id) = self.selected_group_id {
+                                                self.to_backend_tx.try_send(ToBackend::FetchGroupMessages(id)).ok();
+                                                self.to_backend_tx.try_send(ToBackend::FetchGroupMembers(id)).ok();
+
+                                        }
+                                    }
+                                }
             FromBackend::NewMessage(group_id, msg) => {
-                            self.messages.entry(group_id).or_default().push(msg);
-                        },
+                                    self.messages.entry(group_id).or_default().push(msg);
+                                },
             FromBackend::Error(err) => self.error_message = Some(err),
             FromBackend::Info(info) => self.info_message = Some(info),
             FromBackend::InvitationsFetched(invitations) => {
-                            self.pending_invitations = invitations;
-                        }
+                                    self.pending_invitations = invitations;
+                                }
             FromBackend::InvitationDeclined(id) => {
-                            self.pending_invitations.retain(|inv| inv.id != id);
-                            self.info_message = Some("Invito rifiutato.".into());
-                        }
+                                    self.pending_invitations.retain(|inv| inv.id != id);
+                                    self.info_message = Some("Invito rifiutato.".into());
+                                }
             FromBackend::GroupMessagesFetched(group_id, history) => {
-                            self.messages.insert(group_id, history);
-                        }
+                                    self.messages.insert(group_id, history);
+                                }
             FromBackend::GroupMembersFetched(_, members) => self.selected_group_members = Some(members),
+            FromBackend::GroupMembersChanged =>{  
+                                if let Some(id) = self.selected_group_id {
+                                    self.to_backend_tx.try_send(ToBackend::FetchGroupMessages(id)).ok();
+                                    self.to_backend_tx.try_send(ToBackend::FetchGroupMembers(id)).ok();
+
+                                }},
         }
     }
 }
@@ -317,7 +323,7 @@ impl eframe::App for RuggineApp {
 
         // Ridisegno la UI
         if self.current_user.is_some() {
-            if self.last_invitation_fetch.elapsed() > Duration::from_secs(15) {
+            if self.last_invitation_fetch.elapsed() > Duration::from_secs(5) {
                 self.to_backend_tx.try_send(ToBackend::FetchInvitations).ok();
                 self.last_invitation_fetch = Instant::now();
             }

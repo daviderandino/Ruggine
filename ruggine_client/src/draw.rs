@@ -1,3 +1,5 @@
+use std::ptr::null;
+
 use super::*;
 pub fn configure_styles(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
@@ -120,6 +122,7 @@ impl RuggineApp{
                                 self.to_backend_tx.try_send(ToBackend::FetchGroupMessages(group.id)).ok();
                                 self.to_backend_tx.try_send(ToBackend::FetchGroupMembers(group.id)).ok();
                             }
+                             
                             if is_selected {
                                 ui.add_space(5.0);
                                 ui.horizontal(|ui| {
@@ -139,6 +142,7 @@ impl RuggineApp{
                                 });
                             }
                         }
+                       
                     });
                 });
                 
@@ -210,6 +214,7 @@ impl RuggineApp{
         ui.add_space(10.0);
         ui.heading("Inviti Pendenti");
         ui.add_space(5.0);
+        //self.to_backend_tx.try_send(ToBackend::FetchInvitations).ok(); //se vogliamo inviti istantanei
         if self.pending_invitations.is_empty() {
             ui.label("Nessun invito.");
         } else {
@@ -223,9 +228,11 @@ impl RuggineApp{
                             ui.horizontal(|ui| {
                                 if ui.button("✅ Accetta").clicked() {
                                     self.to_backend_tx.try_send(ToBackend::AcceptInvitation(invitation.id)).ok();
+                                    self.to_backend_tx.try_send(ToBackend::FetchInvitations).ok();
                                 }
                                 if ui.button("❌ Rifiuta").clicked() {
                                     self.to_backend_tx.try_send(ToBackend::DeclineInvitation(invitation.id)).ok();
+                                    self.to_backend_tx.try_send(ToBackend::FetchInvitations).ok();
                                 }
                             });
                         });
@@ -237,7 +244,7 @@ impl RuggineApp{
     }
 
     pub fn draw_message_bubble(&self, ui: &mut egui::Ui, msg: &WsServerMessage) {
-        if msg.sender_id.is_nil() {
+        if msg.sender_id == Uuid::from_u128(0) {
             ui.add_space(4.0);
             ui.with_layout(Layout::top_down(Align::Center), |ui| {
                 ui.label(

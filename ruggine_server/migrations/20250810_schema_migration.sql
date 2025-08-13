@@ -68,7 +68,6 @@ CREATE TABLE group_invitations (
     status           TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending','accepted','declined')),
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    UNIQUE(group_id, invited_user_id),
     FOREIGN KEY (group_id)        REFERENCES groups(id) ON DELETE CASCADE,
     FOREIGN KEY (inviter_id)      REFERENCES users(id)  ON DELETE CASCADE,
     FOREIGN KEY (invited_user_id) REFERENCES users(id)  ON DELETE CASCADE
@@ -88,7 +87,7 @@ CREATE TABLE group_messages (
     DEFAULT (randomblob(16)),
 
     group_id   TEXT NOT NULL,
-    user_id  TEXT NOT NULL,
+    user_id  TEXT, -- Possibilmente null per i messaggi di sistema
     content    TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     FOREIGN KEY (group_id)  REFERENCES groups(id) ON DELETE CASCADE,

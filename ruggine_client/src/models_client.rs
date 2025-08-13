@@ -71,6 +71,7 @@ pub enum FromBackend {
     GroupCreated(Group),
     GroupMessagesFetched(Uuid, Vec<WsServerMessage>),
     GroupMembersFetched(Uuid, Vec<User>),
+    GroupMembersChanged,
 }
 
 #[derive(PartialEq)]

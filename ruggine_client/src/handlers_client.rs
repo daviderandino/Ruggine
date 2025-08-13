@@ -1,3 +1,4 @@
+use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::client;
 
 use super::*;
@@ -9,17 +10,8 @@ pub async fn handle_register(client: &HttpClient, username: String, password: St
     match client.post(format!("{}/users/register", API_BASE_URL)).json(&payload).send().await {
         Ok(res) if res.status().is_success() => FromBackend::Registered,
         Ok(res) => {
-            if res.status() == StatusCode::BAD_REQUEST {
-                return FromBackend::Error("La password è troppo corta.".into());
-            }
-            else if res.status() == StatusCode::CONFLICT {
-                return FromBackend::Error("Nome utente già in uso.".into());
-            }
-            else {
-                return FromBackend::Error(
-                    res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
-                );
-            }
+            let json_error: Value = serde_json::from_str(&res.text().await.unwrap_or("{error: Unknown Error}".to_string())).unwrap();
+            return FromBackend::Error(json_error["error"].to_string());
         }
         Err(_) => FromBackend::Error("Impossibile connettersi al server.".into()),
     }
@@ -60,17 +52,8 @@ pub async fn handle_login(
             ))
         }
         Ok(res) => {
-            if res.status() == StatusCode::UNAUTHORIZED {
-                return Err(FromBackend::Error("Username e password errati.".into()));
-            }
-            else if res.status() == StatusCode::NOT_FOUND {
-                return Err(FromBackend::Error("Utente non trovato.".into()));
-            }
-            else {
-                return Err(FromBackend::Error(
-                    res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
-                ));
-            }
+            let json_error: Value = serde_json::from_str(&res.text().await.unwrap_or("{error: Unknown Error}".to_string())).unwrap();
+            return Err(FromBackend::Error(json_error["error"].to_string()));
         }
         Err(_) => Err(FromBackend::Error(
             "Impossibile connettersi al server.".into(),
@@ -85,7 +68,10 @@ pub async fn handle_create_group(client: &HttpClient, name: String) -> Result<Gr
         Ok(res) if res.status().is_success() => {
             res.json::<Group>().await.map_err(|_| FromBackend::Error("Errore decodifica gruppo creato.".into()))
         }
-        Ok(res) => Err(FromBackend::Error(res.text().await.unwrap_or_default())),
+        Ok(res) => {                
+            let json_error: Value = serde_json::from_str(&res.text().await.unwrap_or("{error: Unknown Error}".to_string())).unwrap();
+            return Err(FromBackend::Error(json_error["error"].to_string()));
+        },
         Err(_) => Err(FromBackend::Error("Errore di connessione.".into())),
     }
 }
@@ -93,7 +79,9 @@ pub async fn handle_create_group(client: &HttpClient, name: String) -> Result<Gr
 pub async fn handle_leave_group(client: &HttpClient, group_id: Uuid) -> FromBackend {
     match client.delete(format!("{}/groups/{}/leave", API_BASE_URL, group_id)).send().await {
         Ok(res) if res.status().is_success() => FromBackend::GroupLeft(group_id),
-        Ok(res) => FromBackend::Error(res.text().await.unwrap_or_else(|_| "Errore durante l'uscita dal gruppo.".into())),
+        Ok(res) => {
+            let json_error: Value = serde_json::from_str(&res.text().await.unwrap_or("{error: Unknown Error}".to_string())).unwrap();
+            return FromBackend::Error(json_error["error"].to_string());},
         Err(_) => FromBackend::Error("Errore di connessione.".into()),
     }
 }
@@ -124,25 +112,16 @@ pub async fn handle_invite(
         .send()
         .await
     {
-        Ok(res) if res.status().is_success() => {
-            FromBackend::Info(format!("Invito inviato a {}.", username_to_invite))
-        }
-        Ok(res) => FromBackend::Error(
-            if res.status() == StatusCode::FORBIDDEN {
-                return FromBackend::Error("Errore, l'utente che invita non è membro del gruppo.".into());
-            }
-            else if res.status() == StatusCode::NOT_FOUND {
-                return FromBackend::Error("L'utente o il gruppo non esistono.".into());
-            }
-            else if res.status() == StatusCode::CONFLICT {
-                return FromBackend::Error("L'utente è già membro del gruppo.".into());
+        Ok(res) =>
+            if res.status().is_success(){
+                return FromBackend::Info(format!("Invito inviato a {}.", username_to_invite))
             }
             else {
-                return FromBackend::Error(
-                    res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
-                );
+                let json_error: Value = serde_json::from_str(&res.text().await.unwrap_or("{error: Unknown Error}".to_string())).unwrap();
+                return FromBackend::Error(json_error["error"].to_string());
             }
-        ),
+            
+        ,
         Err(_) => FromBackend::Error("Errore di connessione durante l'invito.".into()),
     }
 }
@@ -161,14 +140,8 @@ pub async fn handle_accept_invitation(client: &HttpClient, id: Uuid) -> Result<G
     match client.post(format!("{}/invitations/{}/accept", API_BASE_URL, id)).send().await {
         Ok(res) if res.status().is_success() => res.json::<Group>().await.map_err(|_| FromBackend::Error("Errore decodifica gruppo.".into())),
         Ok(res) => {
-            if res.status() == StatusCode::NOT_FOUND {
-                return Err(FromBackend::Error("Inviti non trovati.".into()));   
-            }
-            else {
-                return Err(FromBackend::Error(
-                    res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
-                ));
-            }
+                let json_error: Value = serde_json::from_str(&res.text().await.unwrap_or("{error: Unknown Error}".to_string())).unwrap();
+                return Err(FromBackend::Error(json_error["error"].to_string()));
         }
         Err(_) => Err(FromBackend::Error("Errore di connessione.".into())),
     }
@@ -178,14 +151,8 @@ pub async fn handle_decline_invitation(client: &HttpClient, id: Uuid) -> FromBac
     match client.post(format!("{}/invitations/{}/decline", API_BASE_URL, id)).send().await {
         Ok(res) if res.status().is_success() => FromBackend::InvitationDeclined(id),
         Ok(res) => {
-            if res.status() == StatusCode::NOT_FOUND {
-                return FromBackend::Error("Inviti non trovati.".into());   
-            }
-            else {
-                return FromBackend::Error(
-                    res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
-                );
-            }
+            let json_error: Value = serde_json::from_str(&res.text().await.unwrap_or("{error: Unknown Error}".to_string())).unwrap();
+            return FromBackend::Error(json_error["error"].to_string());
         }
         Err(_) => FromBackend::Error("Errore di connessione.".into()),
     }
@@ -200,14 +167,8 @@ pub async fn handle_fetch_group_messages(client: &HttpClient, group_id: Uuid) ->
             }
         },
         Ok(res) => {
-            if res.status() == StatusCode::FORBIDDEN {
-                return FromBackend::Error("Accesso negato, l'utente non è membro del gruppo.".into());
-            }
-            else {
-                return FromBackend::Error(
-                    res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".into()),
-                );
-            }
+            let json_error: Value = serde_json::from_str(&res.text().await.unwrap_or("{error: Unknown Error}".to_string())).unwrap();
+            return FromBackend::Error(json_error["error"].to_string());
         }
         Err(_) => FromBackend::Error("Errore di connessione per la cronologia dei messaggi.".into()),
     }
@@ -222,7 +183,8 @@ pub async fn handle_fetch_group_members(client: &HttpClient, group_id: Uuid) -> 
             }
         }
         Ok(res) => {
-            FromBackend::Error(res.text().await.unwrap_or_else(|_| "Errore sconosciuto.".to_string()))
+                let json_error: Value = serde_json::from_str(&res.text().await.unwrap_or("{error: Unknown Error}".to_string())).unwrap();
+                return FromBackend::Error(json_error["error"].to_string());
         }
         Err(_) => FromBackend::Error("Errore richiesta handle fetch".to_string()),
     }
@@ -249,6 +211,7 @@ pub async fn handle_join_group(
             if let WsMessage::Text(text) = msg {
                 if let Ok(server_msg) = serde_json::from_str::<WsServerMessage>(&text) {
                     if ui_tx.send(FromBackend::NewMessage(group.id, server_msg)).await.is_err() { break; }
+                    let _ = ui_tx.send(FromBackend::GroupMembersChanged).await;
                 }
             }
         }
