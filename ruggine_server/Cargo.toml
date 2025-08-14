@@ -24,3 +24,4 @@ bcrypt = "0.15"
 jsonwebtoken = "9.3"
 chrono = { version = "0.4", features = ["serde"] }
 axum-extra = { version = "0.9", features = ["typed-header"] }
+sqlx-cli = "0.8.6"
