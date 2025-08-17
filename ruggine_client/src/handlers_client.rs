@@ -190,7 +190,7 @@ pub async fn handle_fetch_group_members(client: &HttpClient, group_id: Uuid) -> 
     }
 }
 
-pub async fn handle_join_group(
+pub async fn get_group_transmitter(
     group: Group,
     token: String,
     from_backend_tx: Sender<FromBackend>

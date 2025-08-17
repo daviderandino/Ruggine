@@ -71,7 +71,7 @@ fn new(cc: &eframe::CreationContext<'_>) -> Self {
 
     let egui_ctx = cc.egui_ctx.clone();
     
-    //Thread handler
+    //ToBackend Thread
     runtime.spawn(async move {
         let mut client = HttpClient::new();
         let mut ws_senders: HashMap<Uuid, Sender<WsMessage>> = HashMap::new();
@@ -101,7 +101,7 @@ fn new(cc: &eframe::CreationContext<'_>) -> Self {
                             // Subscribe to all groups upon login
                             for group in groups {
                                 if let Some(token) = &current_token {
-                                    if let Ok(ws_tx) = handle_join_group(group.clone(), token.clone(), from_backend_tx.clone()).await {
+                                    if let Ok(ws_tx) = get_group_transmitter(group.clone(), token.clone(), from_backend_tx.clone()).await {
                                         ws_senders.insert(group.id, ws_tx);
                                     }
                                 }
@@ -130,7 +130,7 @@ fn new(cc: &eframe::CreationContext<'_>) -> Self {
                 match handle_create_group(&client, group_name).await {
                     Ok(group) => {
                         if let Some(token) = &current_token {
-                            if let Ok(ws_tx) = handle_join_group(group.clone(), token.clone(), from_backend_tx.clone()).await {
+                            if let Ok(ws_tx) = get_group_transmitter(group.clone(), token.clone(), from_backend_tx.clone()).await {
                                 ws_senders.insert(group.id, ws_tx);
                             }
                             let _ = from_backend_tx.send(FromBackend::GroupCreated(group.clone())).await;
@@ -145,7 +145,7 @@ fn new(cc: &eframe::CreationContext<'_>) -> Self {
             }
             ToBackend::JoinGroup(group) => {
                     if let Some(token) = &current_token {
-                        match handle_join_group(group.clone(), token.clone(), from_backend_tx.clone()).await {
+                        match get_group_transmitter(group.clone(), token.clone(), from_backend_tx.clone()).await {
                         Ok(ws_tx) => {
                             ws_senders.insert(group.id, ws_tx);
                             let _ = from_backend_tx.send(FromBackend::GroupJoined(group.clone())).await;
@@ -187,7 +187,7 @@ fn new(cc: &eframe::CreationContext<'_>) -> Self {
                     match handle_accept_invitation(&client, id).await {
                     Ok(group) => {
                         if let Some(token) = &current_token {
-                            if let Ok(ws_tx) = handle_join_group(group.clone(), token.clone(), from_backend_tx.clone()).await {
+                            if let Ok(ws_tx) = get_group_transmitter(group.clone(), token.clone(), from_backend_tx.clone()).await {
                                 ws_senders.insert(group.id, ws_tx);
                             }
                             let _ = from_backend_tx.send(FromBackend::GroupJoined(group)).await;
