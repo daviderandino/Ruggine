@@ -2,15 +2,17 @@ use axum::{
     routing::{get, post, delete},
     Router,
 };
+use cpu_time::ProcessTime;
 use dashmap::DashMap;
 use sqlx::{Pool, Sqlite};
-use std::env;
+use std::{env, sync::OnceLock};
+use sysinfo::{System};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::time;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{filter::FilterExt, fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 use uuid::Uuid;
 
 // Dichiarazione di tutti i moduli
@@ -21,6 +23,7 @@ mod models;
 pub mod error;
 
 pub type ChatState = Arc<DashMap<Uuid, broadcast::Sender<String>>>;
+static LOG_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
 
 #[derive(Clone)]
 pub struct AppState {
@@ -92,30 +95,46 @@ async fn main() {
 
 fn initialize_logging() {
     let file_appender = tracing_appender::rolling::daily("logs", "ruggine_server.log");
-    let (non_blocking_writer, _guard) = tracing_appender::non_blocking(file_appender);
+    let (non_blocking_writer, guard) = tracing_appender::non_blocking(file_appender);
+
+    // Salvo guard nella variabile statica per scrivere nel log file
+    LOG_GUARD.set(guard).ok();
+    //Cosa stampare in console
+    let console_layer = fmt::Layer::new()
+        .with_writer(std::io::stdout)
+        .with_filter(EnvFilter::new("info"));
+
+    // Cosa stampare nel file
+    let file_layer = fmt::Layer::new()
+        .with_writer(non_blocking_writer)
+        //.with_filter(EnvFilter::new("debug"))
+        //.with_filter(EnvFilter::new("trace"))
+        .with_filter(EnvFilter::new("info"));
+
+
 
     tracing_subscriber::registry()
-        .with(fmt::Layer::new().with_writer(std::io::stdout))
-        .with(fmt::Layer::new().with_writer(non_blocking_writer))
-        .init();
+        .with(console_layer)
+        .with(file_layer)
+        .init()
 }
 
 async fn log_cpu_usage() {
     let mut interval = time::interval(Duration::from_secs(120));
-    loop {
+    let mut sys = System::new_all();
+    // Get this process’s PID
+    let pid = sysinfo::get_current_pid().expect("failed to get current pid");
+    loop{
+        let start = ProcessTime::now();
+        sys.refresh_process(pid);
         interval.tick().await;
-        match sys_info::loadavg() {
-            Ok(load) => {
-                tracing::info!(
-                    "CPU USAGE (load average): 1m={:.2} 5m={:.2} 15m={:.2}",
-                    load.one,
-                    load.five,
-                    load.fifteen
-                );
-            }
-            Err(e) => {
-                tracing::error!("Failed to get CPU load average: {}", e);
-            }
+        if let Some(process) = sys.process(pid) {
+            tracing::info!(
+                "Process {} CPU usage: {:.2}% CPU Time: {:?}",
+                process.name(),
+                process.cpu_usage(),
+                start.elapsed(),
+            );
         }
     }
 }
