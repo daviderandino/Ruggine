@@ -108,7 +108,7 @@ INSERT INTO users (id, username, password_hash) VALUES (x'0000000000000000000000
 -- INSERT INTO group_members (user_id, group_id)
 -- SELECT u.id, g.id FROM users u, groups g WHERE u.username='mario' AND g.name='Il Mio Gruppo Fantastico';
 -- -- Messaggio
--- INSERT INTO group_messages (group_id, sender_id, content)
+-- INSERT INTO group_messages (group_id, user_id, content)
 -- SELECT g.id, u.id, 'Ciao a tutti!' FROM users u, groups g WHERE u.username='mario' AND g.name='Il Mio Gruppo Fantastico';
 -- -- Invito
 -- INSERT INTO group_invitations (group_id, inviter_id, invited_user_id)
