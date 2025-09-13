@@ -429,7 +429,10 @@ pub async fn get_group_messages(
     .await?;
 
     if !is_member.0 {
-        return Err(AppError::MissingPermissions);
+        // Ritorniamo dei messaggi vuoti piuttosto che l'errore di permesso. Questo perché, dopo aver abbandonato un gruppo, se ritorniamo qui
+        // un Err(App) generiamo un messaggio fallace di mancata autorizzazione
+        let void_messages = WsServerMessage{ sender_id: Uuid::nil(), sender_username: " ".to_string(), content: " ".to_string() };
+        return Ok(Json(vec!(void_messages)));
     }
 
     // --- INIZIO MODIFICA ---
